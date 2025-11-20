@@ -32,6 +32,9 @@ class PrepareBatchGraph:
         self.virtual_adj = []
         self.remove_edge_list = []
         self.community_features = []
+        self.community_partitions = []
+        self.comm_pool = {"index": [], "value": [], "m": 0, "n": 0}
+        self.node_feat = []
         
     def get_status_info(self,g: Graph,covered: List[int], remove_edge: List[set]):
         c = set(covered)
@@ -80,8 +83,12 @@ class PrepareBatchGraph:
         self.idx_map_list = []
         self.avail_act_cnt = []
         self.community_features = []
+        self.community_partitions = []
+        self.comm_pool = {"index": [], "value": [], "m": 0, "n": 0}
+        self.node_feat = [[], []]
 
         node_cnt = [0,0]
+        total_comm = 0
         for i, idx in enumerate(idxes):
             g = g_list[idx]
             temp_feat1 = []
@@ -110,6 +117,7 @@ class PrepareBatchGraph:
             self.remove_edge_list.append(remove_edge)
             # capture community features for downstream consumption
             self.community_features.append(getattr(g, "community_features", None))
+            self.community_partitions.append(getattr(g, "community_partition", {}))
             
         for j in range(2):
             self.graph[j].resize(len(idxes), node_cnt[j])
@@ -128,7 +136,16 @@ class PrepareBatchGraph:
             g = g_list[idx]
             idx_map = self.idx_map_list[i]
             remove_edge = self.remove_edge_list[i]
+            comm_part = self.community_partitions[i] if self.community_partitions[i] else {}
+            comm_id_map = {}
             t = [0,0]
+            # precompute max degree per layer
+            max_deg = []
+            for h in range(2):
+                if len(g.adj_list[h]) == 0:
+                    max_deg.append(1)
+                else:
+                    max_deg.append(max(len(item[1]) for item in g.adj_list[h]))
             for j in range(g.num_nodes):
                 for h in range(2):
                     if idx_map[h][j] < 0:
@@ -139,6 +156,19 @@ class PrepareBatchGraph:
                         self.rep_global[h].rowIndex.append(node_cnt[h] + t[h])
                         self.rep_global[h].colIndex.append(i)
                         self.rep_global[h].value.append(1.0)
+                    # build node features (deg_norm + community 3 dims)
+                    comm_feat = self.community_features[i][j] if self.community_features[i] is not None else [0.0, 0.0, 0.0]
+                    deg = len(g.adj_list[h][j][1]) if len(g.adj_list[h]) > j else 0
+                    deg_norm = deg / max_deg[h] if max_deg[h] > 0 else 0.0
+                    feat_vec = [deg_norm] + list(comm_feat)
+                    if len(self.node_feat[h]) <= node_cnt[h] + t[h]:
+                        self.node_feat[h].append(feat_vec)
+                    else:
+                        self.node_feat[h][node_cnt[h] + t[h]] = feat_vec
+                    # record community id mapping for comm_pool (use layer0 mapping)
+                    if h == 0:
+                        cid = comm_part.get(j, 0)
+                        comm_id_map[j] = cid
                     t[h] += 1
             #error
             assert t[0] == self.avail_act_cnt[i][0]
@@ -164,8 +194,47 @@ class PrepareBatchGraph:
                         edge_cnt[j] += 1
 
                 node_cnt[j] += self.avail_act_cnt[i][j]
+            # build comm_pool indices for this graph using layer0 mapping
+            if comm_part:
+                offset_comm = total_comm
+                unique_comm = set(comm_part.values())
+                total_comm += len(unique_comm)
+                for orig_node, cid in comm_part.items():
+                    mapped = idx_map[0][orig_node]
+                    if mapped >= 0:
+                        self.comm_pool["index"].append([offset_comm + cid, node_cnt[0] - self.avail_act_cnt[i][0] + mapped])
+                        self.comm_pool["value"].append(1.0)
+            else:
+                # single community fallback
+                offset_comm = total_comm
+                total_comm += 1
+                for orig_node in range(g.num_nodes):
+                    mapped = idx_map[0][orig_node]
+                    if mapped >= 0:
+                        self.comm_pool["index"].append([offset_comm, node_cnt[0] - self.avail_act_cnt[i][0] + mapped])
+                        self.comm_pool["value"].append(1.0)
         #error
         assert node_cnt[0] == self.graph[0].num_nodes
+        self.comm_pool["m"] = total_comm
+        self.comm_pool["n"] = node_cnt[0]
+        if self.comm_pool["index"]:
+            indices = np.array(self.comm_pool["index"]).T
+            values = np.array(self.comm_pool["value"])
+            self.comm_pool = {
+                "index": torch.tensor(indices, dtype=torch.long),
+                "value": torch.tensor(values, dtype=torch.float),
+                "m": total_comm,
+                "n": node_cnt[0],
+            }
+        else:
+            self.comm_pool = {
+                "index": torch.zeros((2,0), dtype=torch.long),
+                "value": torch.zeros((0,), dtype=torch.float),
+                "m": 0,
+                "n": node_cnt[0],
+            }
+        # convert node_feat to numpy arrays
+        self.node_feat = [np.array(f, dtype=np.float32) if len(f)>0 else np.zeros((0,4),dtype=np.float32) for f in self.node_feat]
         result_list = self.n2n_construct(self.aggregatorID)
         self.n2nsum_param = result_list[0]
         self.laplacian_param = result_list[1]
@@ -179,7 +248,7 @@ class PrepareBatchGraph:
             self.n2nsum_param[j] = self.convert_sparse_to_tensor(self.n2nsum_param[j])
             self.laplacian_param[j] = self.convert_sparse_to_tensor(self.laplacian_param[j])
             self.subgsum_param[j] = self.convert_sparse_to_tensor(self.subgsum_param[j])
-
+        # keep comm_pool as tensors on CPU; move later in torch code
 
     def SetupTrain(self, idxes, g_list, covered, actions, remove_edges):
         self.Setup_graph_input(idxes, g_list, covered, actions, remove_edges)
@@ -342,4 +411,3 @@ class PrepareBatchGraph:
                 virtual_adj[row_idx][col_idx] = weight
             virtual_adjs.append(virtual_adj)
         return [result,virtual_adjs]
-

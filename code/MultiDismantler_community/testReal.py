@@ -15,7 +15,7 @@ def mkdir(path):
 
 g_type = "GMM"
 ap = argparse.ArgumentParser()
-ap.add_argument("-o", "--output", required=True,
+ap.add_argument("-o", "--output", default="../../results/community_cost/MultiDismantler_real",
                 help="path to output file")
 args = vars(ap.parse_args())
 
@@ -58,7 +58,7 @@ def GetSolution(STEPRATIO, MODEL_FILE):
 
 def main():
     outputpath = f"{args['output']}"    
-    model_file_ckpt = 'g0.5_TORCH-Model_{}_30_50/nrange_30_50_iter_100000.ckpt'.format(g_type)
+    model_file_ckpt = 'g0.5_TORCH-Model_{}_30_50/nrange_30_50_iter_50000.ckpt'.format(g_type)
     GetSolution(0, model_file_ckpt)
 
 

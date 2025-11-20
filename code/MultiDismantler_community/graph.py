@@ -35,10 +35,12 @@ class Graph:
             self.num_edges = [len(self.edge_list[0]),len(self.edge_list[1])]
             self.max_rank = 0
             self.weights =[{},{}]
+            self.community_partition = {}
             self.ori_rank(G1,G2)
             self.community_features = []
             self._compute_community_features()
         else:
+            self.community_partition = {}
             self.community_features = []
             
     def reshape_graph(self, num_nodes, num_edges, edges_from, edges_to):
@@ -62,6 +64,7 @@ class Graph:
         """Compute community-aware features (internal/external ratio and community size ratio)."""
         if self.num_nodes == 0:
             self.community_features = []
+            self.community_partition = {}
             return
 
         G_nx = nx.Graph()
@@ -76,6 +79,7 @@ class Graph:
         if not partition:
             # fallback: single community
             partition = {i: 0 for i in range(self.num_nodes)}
+        self.community_partition = partition.copy()
 
         community_sizes = defaultdict(int)
         for comm_id in partition.values():
@@ -138,6 +142,7 @@ class Graph_test:
         self.weights =[{},{}]
         self.ori_rank(G1,G2)
         self.community_features = []
+        self.community_partition = {}
         self._compute_community_features(G1, G2)
         
     def ori_rank(self,G1,G2):
@@ -150,6 +155,7 @@ class Graph_test:
         """Compute community features for test graphs using merged layers."""
         if self.num_nodes == 0:
             self.community_features = []
+            self.community_partition = {}
             return
         G_nx = nx.Graph()
         G_nx.add_nodes_from(range(self.num_nodes))
@@ -168,6 +174,7 @@ class Graph_test:
 
         if not partition:
             partition = {i: 0 for i in range(self.num_nodes)}
+        self.community_partition = partition.copy()
 
         community_sizes = defaultdict(int)
         for comm_id in partition.values():

@@ -33,7 +33,7 @@ from MRGNN.aggregators import MeanAggregator, LSTMAggregator, PoolAggregator
 GAMMA = 1  # decay rate of past observations
 UPDATE_TIME = 1000
 EMBEDDING_SIZE = 64
-MAX_ITERATION = 100001
+MAX_ITERATION = 50000
 LEARNING_RATE = 0.0001   #
 MEMORY_SIZE = 100000
 Alpha = 0.001 ## weight of reconstruction loss
@@ -110,8 +110,8 @@ class MultiDismantler:
         
         layerNodeAttention_weight1 = BitwiseMultipyLogis(EMBEDDING_SIZE, dropout=0.5, alpha=0.5,
                                                         metapath_number=2, device = self.device)
-        self.MultiDismantler_net = MultiDismantler_net(layerNodeAttention_weight1, device=self.device)
-        self.MultiDismantler_net_T = MultiDismantler_net(layerNodeAttention_weight1, device=self.device)
+        self.MultiDismantler_net = MultiDismantler_net(layerNodeAttention_weight1, device=self.device, node_feat_dim=4)
+        self.MultiDismantler_net_T = MultiDismantler_net(layerNodeAttention_weight1, device=self.device, node_feat_dim=4)
         self.MultiDismantler_net.to(self.device)
         self.MultiDismantler_net_T.to(self.device)
 
@@ -209,10 +209,17 @@ class MultiDismantler:
         self.inputs['n2nsum_param'] = self.SetupSparseT(PrepareBatchGraph1.n2nsum_param)
         self.inputs['laplacian_param'] = self.SetupSparseT(PrepareBatchGraph1.laplacian_param)
         self.inputs['subgsum_param'] = self.SetupSparseT(PrepareBatchGraph1.subgsum_param)
-        self.inputs['node_input'] = None
+        node_np = np.array(PrepareBatchGraph1.node_feat, dtype=np.float32)
+        self.inputs['node_input'] = torch.from_numpy(node_np).to(self.device)
         self.inputs['aux_input'] = Variable(torch.tensor(PrepareBatchGraph1.aux_feat).type(torch.FloatTensor)).to(self.device)
         self.inputs['adj'] = PrepareBatchGraph1.adj
         self.inputs['v_adj'] = PrepareBatchGraph1.virtual_adj
+        self.inputs['comm_pool'] = {
+            "index": PrepareBatchGraph1.comm_pool["index"].to(self.device),
+            "value": PrepareBatchGraph1.comm_pool["value"].to(self.device),
+            "m": PrepareBatchGraph1.comm_pool["m"],
+            "n": PrepareBatchGraph1.comm_pool["n"],
+        }
 
     def temp_prepareBatchGraph(self,prepareBatchGraph):
         prepareBatchGraph.act_select = prepareBatchGraph.act_select[0]
@@ -235,10 +242,17 @@ class MultiDismantler:
 
         self.inputs['subgsum_param'] = self.SetupSparseT(PrepareBatchGraph1.subgsum_param)
 
-        self.inputs['node_input'] = None
+        node_np = np.array(PrepareBatchGraph1.node_feat, dtype=np.float32)
+        self.inputs['node_input'] = torch.from_numpy(node_np).to(self.device)
         self.inputs['aux_input'] = Variable(torch.tensor(PrepareBatchGraph1.aux_feat).type(torch.FloatTensor)).to(self.device)
         self.inputs['adj'] = PrepareBatchGraph1.adj
         self.inputs['v_adj'] = PrepareBatchGraph1.virtual_adj
+        self.inputs['comm_pool'] = {
+            "index": PrepareBatchGraph1.comm_pool["index"].to(self.device),
+            "value": PrepareBatchGraph1.comm_pool["value"].to(self.device),
+            "m": PrepareBatchGraph1.comm_pool["m"],
+            "n": PrepareBatchGraph1.comm_pool["n"],
+        }
         return PrepareBatchGraph1.idx_map_list
 
     def Predict(self,g_list,covered,remove_edges,isSnapSnot):
@@ -256,11 +270,11 @@ class MultiDismantler:
             if isSnapSnot:
                 result = self.MultiDismantler_net_T.test_forward(node_input=self.inputs['node_input'],\
                     subgsum_param=self.inputs['subgsum_param'], n2nsum_param=self.inputs['n2nsum_param'],\
-                    rep_global=self.inputs['rep_global'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'])
+                    rep_global=self.inputs['rep_global'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'], comm_pool=self.inputs['comm_pool'])
             else:
                 result = self.MultiDismantler_net.test_forward(node_input=self.inputs['node_input'],\
                     subgsum_param=self.inputs['subgsum_param'], n2nsum_param=self.inputs['n2nsum_param'],\
-                    rep_global=self.inputs['rep_global'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'])
+                    rep_global=self.inputs['rep_global'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'], comm_pool=self.inputs['comm_pool'])
             # TOFIX: line below used to be raw_output = result[0]. This is weird because results is supposed to be 
             # [node_cnt, 1] (Q-values per node). And indeed it resulted in an error! I have fixed it by the line below
             # look inito it later.
@@ -379,7 +393,7 @@ class MultiDismantler:
             #Node inpute is NONE for not costed scnario
             q_pred, cur_message_layer = self.MultiDismantler_net.train_forward(node_input=self.inputs['node_input'],\
                 subgsum_param=self.inputs['subgsum_param'], n2nsum_param=self.inputs['n2nsum_param'],\
-                action_select=self.inputs['action_select'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'])
+                action_select=self.inputs['action_select'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'], comm_pool=self.inputs['comm_pool'])
 
             loss = self.calc_loss(q_pred, cur_message_layer)
             loss.backward()

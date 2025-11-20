@@ -33,7 +33,7 @@ from MRGNN.aggregators import MeanAggregator, LSTMAggregator, PoolAggregator
 GAMMA = 1  # decay rate of past observations
 UPDATE_TIME = 1000
 EMBEDDING_SIZE = 64
-MAX_ITERATION = 100001
+MAX_ITERATION = 50000
 LEARNING_RATE = 0.0001   #
 MEMORY_SIZE = 100000
 Alpha = 0.001 ## weight of reconstruction loss

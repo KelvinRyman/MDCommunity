@@ -21,7 +21,7 @@ import sys
 class MultiDismantler_net(nn.Module):
     def __init__(self, layerNodeAttention_weight,
                  embedding_size=64, w_initialization_std=1, reg_hidden=32, max_bp_iter=3,
-                 embeddingMethod=1, aux_dim=4, device=None, node_attr=False):
+                 embeddingMethod=1, aux_dim=4, device=None, node_attr=False, node_feat_dim=2):
         super(MultiDismantler_net, self).__init__()
 
         self.layerNodeAttention_weight = layerNodeAttention_weight
@@ -36,7 +36,9 @@ class MultiDismantler_net(nn.Module):
         self.aux_dim = aux_dim
         self.device = device
         self.node_attr = node_attr
+        self.node_feat_dim = node_feat_dim
         self.act = nn.ReLU()
+        self.node_encoder = nn.Linear(self.node_feat_dim, self.embedding_size)
         
         # [2, embed_dim]
         self.w_n2l = nn.parameter.Parameter(data=self.rand_generator(0, self.w_initialization_std,\
@@ -64,7 +66,7 @@ class MultiDismantler_net(nn.Module):
             # [reg_hidden+aux_dim, 1]
             # h2_weight = tf.Variable(tf.truncated_normal([self.reg_hidden + aux_dim, 1], stddev=initialization_stddev), tf.float32)
             self.h2_weight = nn.parameter.Parameter(data=self.rand_generator(0, self.w_initialization_std, \
-                                                                             size=(self.reg_hidden + self.aux_dim, 1)))
+                                                                             size=(self.reg_hidden + self.aux_dim + 2*self.embedding_size, 1)))
             # [reg_hidden2 + aux_dim, 1]
             self.last_w = self.h2_weight
         else:
@@ -75,7 +77,8 @@ class MultiDismantler_net(nn.Module):
                                                                                  2 * self.embedding_size,
                                                                                  self.reg_hidden)))
             # [2*embed_dim, reg_hidden]
-            self.last_w = self.h1_weight
+            self.last_w = nn.parameter.Parameter(data=self.rand_generator(0, self.w_initialization_std, \
+                                                                             size=(2 * self.embedding_size + self.aux_dim + 2*self.embedding_size, 1)))
 
         ## [embed_dim, 1]
         # cross_product = tf.Variable(tf.truncated_normal([self.embedding_size, 1], stddev=initialization_stddev), tf.float32)
@@ -87,12 +90,24 @@ class MultiDismantler_net(nn.Module):
                                                                      size=(embedding_size, 128)))
         self.w_layer2 = nn.parameter.Parameter(data=self.rand_generator(0, self.w_initialization_std,\
                                                                      size=(128, 1)))
+
+        self.comm_attention = nn.Sequential(
+            nn.Linear(self.embedding_size, self.embedding_size),
+            nn.Tanh(),
+            nn.Linear(self.embedding_size, 1)
+        )
+        self.debug_counter = 0
+        self.debug_comm = False
         
         self.flag = 0
-    def train_forward(self, node_input, subgsum_param, n2nsum_param, action_select, aux_input, adj, v_adj):
+    def train_forward(self, node_input, subgsum_param, n2nsum_param, action_select, aux_input, adj, v_adj, comm_pool=None):
         
         nodes_cnt = n2nsum_param[0]['m']
-        node_input = torch.zeros((2, nodes_cnt, 2)).to(self.device)                       
+        use_external_feat = node_input is not None
+        if use_external_feat:
+            node_input = node_input.to(self.device)
+        else:
+            node_input = torch.zeros((2, nodes_cnt, 2)).to(self.device)                       
         y_nodes_size = subgsum_param[0]['m']
         y_node_input = torch.ones((2, y_nodes_size, 2)).to(self.device)
         adj = torch.tensor(np.array(adj),dtype=torch.float).to(self.device)
@@ -100,20 +115,24 @@ class MultiDismantler_net(nn.Module):
         node_embedding = []
         lay_num = 2
         for l in range(lay_num):
-            for i in range(y_nodes_size):
-                node_in_graph = torch.where(v_adj[l][i] == 1)
-                if node_in_graph[0].numel() == 0:
-                    continue
-                degree = torch.sum(adj[l][node_in_graph], axis=1, keepdims=True)
-                degree_max,_ = torch.max(degree,dim=0)
-                degree_new = degree/degree_max
-                node_feature = torch.cat((degree_new,degree_new),axis = 1)
-                node_input[l][node_in_graph] = node_feature
+            if use_external_feat:
+                input_potential_layer = self.node_encoder(node_input[l])
+            else:
+                for i in range(y_nodes_size):
+                    node_in_graph = torch.where(v_adj[l][i] == 1)
+                    if node_in_graph[0].numel() == 0:
+                        continue
+                    degree = torch.sum(adj[l][node_in_graph], axis=1, keepdims=True)
+                    degree_max,_ = torch.max(degree,dim=0)
+                    degree_new = degree/degree_max
+                    node_feature = torch.cat((degree_new,degree_new),axis = 1)
+                    node_input[l][node_in_graph] = node_feature
+                input_message = torch.matmul(node_input[l], self.w_n2l)
+                input_potential_layer = self.act(input_message)
         for l in range(lay_num):
-            input_message = torch.matmul(node_input[l], self.w_n2l)
-            #[node_cnt, embed_dim]  # no sparse
-            #input_potential_layer = tf.nn.relu(input_message)
-            input_potential_layer = self.act(input_message)
+            if use_external_feat:
+                # after encoder already in embedding space
+                input_potential_layer = torch.nn.functional.normalize(input_potential_layer, p=2, dim=1)
 
             # # no sparse
             # [batch_size, embed_dim]
@@ -187,6 +206,30 @@ class MultiDismantler_net(nn.Module):
         # message_layer = torch.stack(node_embedding)          
         # cur_message_layer = message_layer[:, :nodes_cnt, :]
         # y_cur_message_layer = message_layer[:, nodes_cnt:, :]
+        S_comm_global = None
+        if comm_pool is not None and comm_pool.get("m", 0) > 0 and comm_pool.get("n", 0) > 0:
+            H_comm = torch_sparse.spmm(comm_pool["index"], comm_pool["value"], comm_pool["m"], comm_pool["n"], cur_message_layer[0])
+            ones_vec = torch.ones((comm_pool["n"], 1), device=self.device)
+            comm_sizes = torch_sparse.spmm(comm_pool["index"], comm_pool["value"], comm_pool["m"], comm_pool["n"], ones_vec).clamp(min=1.0)
+            H_comm = H_comm / comm_sizes
+            att = self.comm_attention(H_comm)
+            alpha = torch.softmax(att, dim=0)
+            S_comm_global = torch.sum(alpha * H_comm, dim=0, keepdim=True)
+        else:
+            S_comm_global = torch.zeros((1, self.embedding_size), device=self.device)
+        # debug monitor every 100 calls (silenced by default)
+        if self.debug_comm:
+            self.debug_counter += 1
+            if self.debug_counter % 100 == 0:
+                with torch.no_grad():
+                    s_virtual_norm = cur_message_layer.mean(dim=1).norm(dim=1).mean().item()
+                    s_comm_norm = S_comm_global.norm().item()
+                    alpha_min = alpha.min().item() if 'alpha' in locals() else 0.0
+                    alpha_max = alpha.max().item() if 'alpha' in locals() else 0.0
+                    print(f"[comm-debug] step {self.debug_counter}: "
+                          f"S_virtual_norm={s_virtual_norm:.4f}, "
+                          f"S_comm_norm={s_comm_norm:.4f}, "
+                          f"alpha_min={alpha_min:.4f}, alpha_max={alpha_max:.4f}")
         q = 0
         q_list = []
         w_layer = []
@@ -225,7 +268,10 @@ class MultiDismantler_net(nn.Module):
             # if reg_hidden == 0: ,[[batch_size, 2*embed_dim], [batch_size, aux_dim]] = [batch_size, 2*embed_dim+aux_dim]
             # if reg_hidden > 0: ,[[batch_size, reg_hidden], [batch_size, aux_dim]] = [batch_size, reg_hidden+aux_dim]
             # last_output = tf.concat([last_output, self.aux_input], 1)
-            last_output = torch.concat([last_output, aux_input[:,l,:]], 1)
+            S_virtual = torch.mean(cur_message_layer[l], dim=0, keepdim=True)
+            S_global = torch.concat([S_virtual, S_comm_global], dim=1)
+            S_global_expand = S_global.repeat(last_output.size(0), 1)
+            last_output = torch.concat([last_output, aux_input[:,l,:], S_global_expand], 1)
             # if reg_hidden == 0: ,[batch_size, 2*embed_dim+aux_dim] * [2*embed_dim+aux_dim, 1] = [batch_size, 1]
             # if reg_hidden > 0: ,[batch_size, reg_hidden+aux_dim] * [reg_hidden+aux_dim, 1] = [batch_size, 1]
             # q_pred = tf.matmul(last_output, last_w)
@@ -240,9 +286,13 @@ class MultiDismantler_net(nn.Module):
         #q = torch.tensor(q).unsqueeze(1).to(self.device)
         return q, cur_message_layer
 
-    def test_forward(self, node_input, subgsum_param, n2nsum_param, rep_global, aux_input, adj, v_adj):
+    def test_forward(self, node_input, subgsum_param, n2nsum_param, rep_global, aux_input, adj, v_adj, comm_pool=None):
         nodes_cnt = n2nsum_param[0]['m']
-        node_input = torch.zeros((2, nodes_cnt, 2), dtype=torch.float).to(self.device)                            
+        use_external_feat = node_input is not None
+        if use_external_feat:
+            node_input = node_input.to(self.device)
+        else:
+            node_input = torch.zeros((2, nodes_cnt, 2), dtype=torch.float).to(self.device)                            
         y_nodes_size = subgsum_param[0]['m']
         y_node_input = torch.ones((2, y_nodes_size, 2), dtype=torch.float).to(self.device)
         adj = torch.tensor(np.array(adj),dtype=torch.float).to(self.device)
@@ -250,21 +300,23 @@ class MultiDismantler_net(nn.Module):
         node_embedding = []
         lay_num = 2
         for l in range(lay_num):
-            for i in range(y_nodes_size):
-                node_in_graph = torch.where(v_adj[l][i] == 1)
-                if node_in_graph[0].numel() == 0:
-                    continue
-                degree = torch.sum(adj[l][node_in_graph], axis=1, keepdims=True)
-                degree_max,_ = torch.max(degree,dim=0)
-                degree_new = degree/degree_max
-                node_feature = torch.cat((degree_new,degree_new),axis = 1)
-                node_input[l][node_in_graph] = node_feature
-
-        for l in range(lay_num):
-            input_message = torch.matmul(node_input[l], self.w_n2l)
-            #[node_cnt, embed_dim]  # no sparse
-            #input_potential_layer = tf.nn.relu(input_message)
-            input_potential_layer = self.act(input_message)
+            if use_external_feat:
+                input_potential_layer = self.node_encoder(node_input[l])
+                input_potential_layer = torch.nn.functional.normalize(input_potential_layer, p=2, dim=1)
+            else:
+                for i in range(y_nodes_size):
+                    node_in_graph = torch.where(v_adj[l][i] == 1)
+                    if node_in_graph[0].numel() == 0:
+                        continue
+                    degree = torch.sum(adj[l][node_in_graph], axis=1, keepdims=True)
+                    degree_max,_ = torch.max(degree,dim=0)
+                    degree_new = degree/degree_max
+                    node_feature = torch.cat((degree_new,degree_new),axis = 1)
+                    node_input[l][node_in_graph] = node_feature
+                input_message = torch.matmul(node_input[l], self.w_n2l)
+                #[node_cnt, embed_dim]  # no sparse
+                #input_potential_layer = tf.nn.relu(input_message)
+                input_potential_layer = self.act(input_message)
 
             # # no sparse
             # [batch_size, embed_dim]
@@ -340,6 +392,17 @@ class MultiDismantler_net(nn.Module):
         # message_layer = torch.stack(node_embedding)          
         # cur_message_layer = message_layer[:, :nodes_cnt, :]
         # y_cur_message_layer = message_layer[:, nodes_cnt:, :]
+        S_comm_global = None
+        if comm_pool is not None and comm_pool.get("m", 0) > 0 and comm_pool.get("n", 0) > 0:
+            H_comm = torch_sparse.spmm(comm_pool["index"], comm_pool["value"], comm_pool["m"], comm_pool["n"], cur_message_layer[0])
+            ones_vec = torch.ones((comm_pool["n"], 1), device=self.device)
+            comm_sizes = torch_sparse.spmm(comm_pool["index"], comm_pool["value"], comm_pool["m"], comm_pool["n"], ones_vec).clamp(min=1.0)
+            H_comm = H_comm / comm_sizes
+            att = self.comm_attention(H_comm)
+            alpha = torch.softmax(att, dim=0)
+            S_comm_global = torch.sum(alpha * H_comm, dim=0, keepdim=True)
+        else:
+            S_comm_global = torch.zeros((1, self.embedding_size), device=self.device)
         q = 0
         q_list = []
         w_layer = []
@@ -380,7 +443,10 @@ class MultiDismantler_net(nn.Module):
 
             # if reg_hidden == 0: , [[node_cnt, 2 * embed_dim], [node_cnt, aux_dim]] = [node_cnt, 2*embed_dim + aux_dim]
             # if reg_hidden > 0: , [[node_cnt, reg_hidden], [node_cnt, aux_dim]] = [node_cnt, reg_hidden + aux_dim]
-            last_output = torch.concat([last_output, rep_aux], 1)
+            S_virtual = torch.mean(cur_message_layer[l], dim=0, keepdim=True)
+            S_global = torch.concat([S_virtual, S_comm_global], dim=1)
+            S_global_expand = S_global.repeat(last_output.size(0), 1)
+            last_output = torch.concat([last_output, rep_aux, S_global_expand], 1)
 
             # if reg_hidden == 0: , [node_cnt, 2 * embed_dim + aux_dim] * [2 * embed_dim + aux_dim, 1] = [node_cnt，1]
             # f reg_hidden > 0: , [node_cnt, reg_hidden + aux_dim] * [reg_hidden + aux_dim, 1] = [node_cnt，1]
