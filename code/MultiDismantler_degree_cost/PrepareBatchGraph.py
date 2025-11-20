@@ -197,7 +197,7 @@ class PrepareBatchGraph:
         colNum= matrix.colNum
         indices = np.mat([rowIndex, colIndex]).transpose()
 
-        index = torch.tensor(np.transpose(np.array(indices)))
+        index = torch.tensor(np.transpose(np.array(indices)), dtype=torch.long)
         value = torch.Tensor(np.array(data))
         #index, value = torch_sparse.coalesce(index, value, m=rowNum, n=colNum)
         return_dict = {"index": index, "value": value, "m":rowNum, "n":colNum}
