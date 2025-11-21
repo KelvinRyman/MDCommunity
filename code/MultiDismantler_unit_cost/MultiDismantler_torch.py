@@ -33,7 +33,7 @@ from MRGNN.aggregators import MeanAggregator, LSTMAggregator, PoolAggregator
 GAMMA = 1  # decay rate of past observations
 UPDATE_TIME = 1000
 EMBEDDING_SIZE = 64
-MAX_ITERATION = 50000
+MAX_ITERATION = 30000
 LEARNING_RATE = 0.0001   #
 MEMORY_SIZE = 100000
 Alpha = 0.001 ## weight of reconstruction loss
@@ -433,31 +433,38 @@ class MultiDismantler:
                 f_read = open(VCFile)
                 line_ctr = f_read.read().count("\n")
                 f_read.close()
-                start_iter = max(300 * (line_ctr-1), 0)
-                start_model = '%s/nrange_%d_%d_iter_%d.ckpt' % (save_dir, NUM_MIN, NUM_MAX, start_iter)
-                print(f'Found VCFile {VCFile}, choose start model: {start_model}')
-                if(os.path.isfile(VCFile)):
+                # VC 记录按验证频率写入，对应间隔 3000
+                start_iter = max(3000 * (line_ctr-1), 0)
+                # 回退查找最近存在的 ckpt
+                ckpt_iter = start_iter
+                start_model = '%s/nrange_%d_%d_iter_%d.ckpt' % (save_dir, NUM_MIN, NUM_MAX, ckpt_iter)
+                while ckpt_iter > 0 and (not os.path.isfile(start_model)):
+                    ckpt_iter -= 3000
+                    start_model = '%s/nrange_%d_%d_iter_%d.ckpt' % (save_dir, NUM_MIN, NUM_MAX, ckpt_iter)
+                if not os.path.isfile(start_model):
+                    print('failed to load starting model, start iteration from 0..')
+                    start_iter = 0
+                    f_out = open(VCFile, 'w')
+                else:
+                    start_iter = ckpt_iter
+                    print(f'Found VCFile {VCFile}, choose start model: {start_model}')
                     self.LoadModel(start_model)
                     print(f'skipping iterations that are already done, starting at iter {start_iter}..')                    
                     # append instead of new write
                     f_out = open(VCFile, 'a')
-                else:
-                    print('failed to load starting model, start iteration from 0..')
-                    start_iter=0
-                    f_out = open(VCFile, 'w')                
         else:
             f_out = open(VCFile, 'w')
         
         best_frac = inf
-        for iter in range(MAX_ITERATION):
+        for iter in range(start_iter, MAX_ITERATION):
             start = time.perf_counter()
             ###########-----------------------normal training data setup(start) -----------------##############################
-            if( (iter and iter % 5000 == 0) or (iter==start_iter)):
+            if( (iter and iter % 3000 == 0) or (iter==start_iter)):
                 self.gen_new_graphs(NUM_MIN, NUM_MAX)
             eps = eps_end + max(0., (eps_start - eps_end) * (eps_step - iter) / eps_step)
             if iter % 10 == 0:
                 self.PlayGame(10, eps)
-            if iter % 10000 == 0:
+            if iter % 3000 == 0:
                 if(iter == 0 or iter == start_iter):
                     N_start = start
                 else:
@@ -481,7 +488,7 @@ class MultiDismantler:
                 if(skip_saved_iter and iter==start_iter):
                     pass
                 else:
-                    if iter % 10000 == 0:
+                    if iter % 3000 == 0:
                         self.SaveModel(model_path)
             if( (iter % UPDATE_TIME == 0) or (iter==start_iter)):
                 self.TakeSnapShot()

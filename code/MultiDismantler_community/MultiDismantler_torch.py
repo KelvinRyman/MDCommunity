@@ -33,7 +33,7 @@ from MRGNN.aggregators import MeanAggregator, LSTMAggregator, PoolAggregator
 GAMMA = 1  # decay rate of past observations
 UPDATE_TIME = 1000
 EMBEDDING_SIZE = 64
-MAX_ITERATION = 50000
+MAX_ITERATION = 30000
 LEARNING_RATE = 0.0001   #
 MEMORY_SIZE = 100000
 Alpha = 0.001 ## weight of reconstruction loss
@@ -466,7 +466,7 @@ class MultiDismantler:
         for iter in range(MAX_ITERATION):
             start = time.perf_counter()
             ###########-----------------------normal training data setup(start) -----------------##############################
-            if( (iter and iter % 5000 == 0) or (iter==start_iter)):
+            if( (iter and iter % 3000 == 0) or (iter==start_iter)):
                 self.gen_new_graphs(NUM_MIN, NUM_MAX)
             eps = eps_end + max(0., (eps_start - eps_end) * (eps_step - iter) / eps_step)
             if iter % 10 == 0:
@@ -818,3 +818,5 @@ def get_ci_dict(graph):
     degrees = dict(graph.degree()) 
     ci_values = {node: basic_ci(graph, node, degrees) for node in graph.nodes()}
     return ci_values
+
+

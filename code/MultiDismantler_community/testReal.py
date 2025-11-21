@@ -58,7 +58,7 @@ def GetSolution(STEPRATIO, MODEL_FILE):
 
 def main():
     outputpath = f"{args['output']}"    
-    model_file_ckpt = 'g0.5_TORCH-Model_{}_30_50/nrange_30_50_iter_50000.ckpt'.format(g_type)
+    model_file_ckpt = 'g0.5_TORCH-Model_{}_30_50/nrange_30_50_iter_30000.ckpt'.format(g_type)
     GetSolution(0, model_file_ckpt)
 
 
