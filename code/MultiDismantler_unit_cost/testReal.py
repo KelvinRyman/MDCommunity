@@ -15,7 +15,7 @@ def mkdir(path):
 
 g_type = "GMM"
 ap = argparse.ArgumentParser()
-ap.add_argument("-o", "--output", required=True,
+ap.add_argument("-o", "--output", required=True, default="../../results/unitcost/MultiDismantler_real",
                 help="path to output file")
 args = vars(ap.parse_args())
 

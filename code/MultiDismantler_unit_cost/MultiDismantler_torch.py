@@ -34,6 +34,7 @@ GAMMA = 1  # decay rate of past observations
 UPDATE_TIME = 1000
 EMBEDDING_SIZE = 64
 MAX_ITERATION = 30000
+SAVE_FREQUENCY = 3000
 LEARNING_RATE = 0.0001   #
 MEMORY_SIZE = 100000
 Alpha = 0.001 ## weight of reconstruction loss
@@ -433,13 +434,13 @@ class MultiDismantler:
                 f_read = open(VCFile)
                 line_ctr = f_read.read().count("\n")
                 f_read.close()
-                # VC 记录按验证频率写入，对应间隔 3000
-                start_iter = max(3000 * (line_ctr-1), 0)
+                # VC 记录按验证频率写入，对应间隔 SAVE_FREQUENCY
+                start_iter = max(SAVE_FREQUENCY * (line_ctr-1), 0)
                 # 回退查找最近存在的 ckpt
                 ckpt_iter = start_iter
                 start_model = '%s/nrange_%d_%d_iter_%d.ckpt' % (save_dir, NUM_MIN, NUM_MAX, ckpt_iter)
                 while ckpt_iter > 0 and (not os.path.isfile(start_model)):
-                    ckpt_iter -= 3000
+                    ckpt_iter -= SAVE_FREQUENCY
                     start_model = '%s/nrange_%d_%d_iter_%d.ckpt' % (save_dir, NUM_MIN, NUM_MAX, ckpt_iter)
                 if not os.path.isfile(start_model):
                     print('failed to load starting model, start iteration from 0..')
@@ -459,12 +460,12 @@ class MultiDismantler:
         for iter in range(start_iter, MAX_ITERATION):
             start = time.perf_counter()
             ###########-----------------------normal training data setup(start) -----------------##############################
-            if( (iter and iter % 3000 == 0) or (iter==start_iter)):
+            if( (iter and iter % SAVE_FREQUENCY == 0) or (iter==start_iter)):
                 self.gen_new_graphs(NUM_MIN, NUM_MAX)
             eps = eps_end + max(0., (eps_start - eps_end) * (eps_step - iter) / eps_step)
             if iter % 10 == 0:
                 self.PlayGame(10, eps)
-            if iter % 3000 == 0:
+            if iter % SAVE_FREQUENCY == 0:
                 if(iter == 0 or iter == start_iter):
                     N_start = start
                 else:
@@ -488,7 +489,7 @@ class MultiDismantler:
                 if(skip_saved_iter and iter==start_iter):
                     pass
                 else:
-                    if iter % 3000 == 0:
+                    if iter % SAVE_FREQUENCY == 0:
                         self.SaveModel(model_path)
             if( (iter % UPDATE_TIME == 0) or (iter==start_iter)):
                 self.TakeSnapShot()

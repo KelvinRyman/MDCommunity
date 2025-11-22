@@ -16,7 +16,7 @@ def main():
     data_test_path = '../data/synthetic/uniform_cost/'
     data_test_name =['32','64','128','256','512','1024']
     #data_test_name = ['32']
-    model_file = './models/g0.5_TORCH-Model_GMM_30_50/nrange_30_50_iter_100000.ckpt'
+    model_file = './models/g0-1_10w_TORCH-Model_GMM_30_50/nrange_30_50_iter_10000.ckpt'
     types = ['data_g', 'data_gamma', 'data_k']
 
     ap = argparse.ArgumentParser()

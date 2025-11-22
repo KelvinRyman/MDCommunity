@@ -1,14 +1,15 @@
-from MultiDismantler_torch import MultiDismantler
-import numpy as np
-import time
-import os
-import pandas as pd
-import torch.backends.cudnn as cudnn
-import torch
-import random
 import argparse
-import matplotlib
-import matplotlib.pyplot as plt
+import os
+import re
+import random
+import time
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.backends.cudnn as cudnn
+
+from MultiDismantler_torch import MultiDismantler
 def mkdir(path):
     if not os.path.exists(path):
         os.mkdir(path)
@@ -19,6 +20,22 @@ ap.add_argument("-o", "--output", default="../../results/community_cost/MultiDis
                 help="path to output file")
 args = vars(ap.parse_args())
 
+def find_latest_ckpt(models_dir, prefix="nrange"):
+    latest_iter = -1
+    latest_path = None
+    if not os.path.isdir(models_dir):
+        return None
+    for fname in os.listdir(models_dir):
+        if not fname.startswith(prefix) or not fname.endswith(".ckpt"):
+            continue
+        m = re.search(r"iter_(\d+)\.ckpt", fname)
+        if m:
+            val = int(m.group(1))
+            if val > latest_iter:
+                latest_iter = val
+                latest_path = os.path.join(models_dir, fname)
+    return latest_path
+
 def GetSolution(STEPRATIO, MODEL_FILE):
     ######################################################################################################################
     ##................................................Get Solution (model).....................................................
@@ -27,12 +44,13 @@ def GetSolution(STEPRATIO, MODEL_FILE):
     data_test_name = ['fao_trade_multiplex','celegans_connectome_multiplex','fb-tw','homo_genetic_multiplex','sacchpomb_genetic_multiplex','Sanremo2016_final_multiplex']
     date_test_n = [214,279,1043,18222,4092,56562]
     data_test_layer = [(3,24),(2,3),(1,2),(1,2),(4,6),(1,2)]
-    ap = argparse.ArgumentParser()
-    ap.add_argument("-o", "--output", required=True,
-                help="path to output file")
-    args = vars(ap.parse_args())
-    
-    model_file = './models/{}'.format(MODEL_FILE)
+    # resolve model file
+    if MODEL_FILE:
+        model_file = './models/{}'.format(MODEL_FILE)
+    else:
+        model_file = find_latest_ckpt('./models')
+    if model_file is None:
+        raise FileNotFoundError("No checkpoint found under ./models for community model")
     ## save_dir
     save_dir = args['output']
     if not os.path.exists(save_dir):
@@ -58,7 +76,7 @@ def GetSolution(STEPRATIO, MODEL_FILE):
 
 def main():
     outputpath = f"{args['output']}"    
-    model_file_ckpt = 'g0.5_TORCH-Model_{}_30_50/nrange_30_50_iter_30000.ckpt'.format(g_type)
+    model_file_ckpt = None  # auto-pick latest if not provided
     GetSolution(0, model_file_ckpt)
 
 
