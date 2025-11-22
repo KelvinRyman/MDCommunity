@@ -1,5 +1,3 @@
-/data/
 .venv/
 __pycache__
 .vscode
-ModelVC*.csv
