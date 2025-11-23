@@ -24,14 +24,53 @@ def GetSolution(STEPRATIO, MODEL_FILE):
     ##................................................Get Solution (model).....................................................
     dqn = MultiDismantler()
     data_test_path = './data/real/'
-    data_test_name = ['fao_trade_multiplex','celegans_connectome_multiplex','fb-tw','homo_genetic_multiplex','sacchpomb_genetic_multiplex','Sanremo2016_final_multiplex']
-    date_test_n = [214,279,1043,18222,4092,56562]
-    data_test_layer = [(3,24),(2,3),(1,2),(1,2),(4,6),(1,2)]
+    data_test_name = [
+        # 'fao_trade_multiplex',
+        # 'celegans_connectome_multiplex',
+        # 'fb-tw',
+        # 'homo_genetic_multiplex',
+        # 'sacchpomb_genetic_multiplex',
+        # 'Sanremo2016_final_multiplex',
+        # "arxiv_netscience_multiplex",
+        # "EUAirTransportation_multiplex",
+        # "humanHIV1_genetic_multiplex",
+        "Padgett-Florentine-Families_multiplex",
+        "netsci_co-authorship_multiplex",
+        "Lazega-Law-Firm_multiplex",
+    ]
+    date_test_n = [
+        # 214,
+        # 279,
+        # 1043,
+        # 18222,
+        # 4092,
+        # 56562,
+        # 14488,
+        # 450,
+        # 1005,
+        16,
+        1400,
+        71
+    ]
+    data_test_layer = [
+        # (3,24),
+        # (2,3),
+        # (1,2),
+        # (1,2),
+        # (4,6),
+        # (1,2),
+        # (4, 8),
+        # (1, 11),
+        # (1, 5),
+        (1, 2),
+        (1, 2),
+        (1, 3)
+    ]
     ap = argparse.ArgumentParser()
     ap.add_argument("-o", "--output", required=True,
                 help="path to output file")
     args = vars(ap.parse_args())
-    
+
     model_file = './models/{}'.format(MODEL_FILE)
     ## save_dir
     save_dir = args['output']
@@ -58,7 +97,7 @@ def GetSolution(STEPRATIO, MODEL_FILE):
 
 def main():
     outputpath = f"{args['output']}"    
-    model_file_ckpt = 'g0.5_TORCH-Model_{}_30_50/nrange_30_50_iter_30000.ckpt'.format(g_type)
+    model_file_ckpt = 'g0-1_10w_TORCH-Model_{}_30_50/nrange_30_50_iter_24000.ckpt'.format(g_type)
     GetSolution(0, model_file_ckpt)
 
 

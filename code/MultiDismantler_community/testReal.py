@@ -28,7 +28,7 @@ def find_latest_ckpt(models_dir, prefix="nrange"):
     for fname in os.listdir(models_dir):
         if not fname.startswith(prefix) or not fname.endswith(".ckpt"):
             continue
-        m = re.search(r"iter_(\d+)\.ckpt", fname)
+        m = re.search(r"nrange_30_50_iter_(\d+)\.ckpt", fname)
         if m:
             val = int(m.group(1))
             if val > latest_iter:
@@ -41,14 +41,53 @@ def GetSolution(STEPRATIO, MODEL_FILE):
     ##................................................Get Solution (model).....................................................
     dqn = MultiDismantler()
     data_test_path = './data/real/'
-    data_test_name = ['fao_trade_multiplex','celegans_connectome_multiplex','fb-tw','homo_genetic_multiplex','sacchpomb_genetic_multiplex','Sanremo2016_final_multiplex']
-    date_test_n = [214,279,1043,18222,4092,56562]
-    data_test_layer = [(3,24),(2,3),(1,2),(1,2),(4,6),(1,2)]
+    data_test_name = [
+        # 'fao_trade_multiplex',
+        # 'celegans_connectome_multiplex',
+        # 'fb-tw',
+        # 'homo_genetic_multiplex',
+        # 'sacchpomb_genetic_multiplex',
+        # 'Sanremo2016_final_multiplex',
+        # "arxiv_netscience_multiplex",
+        # "EUAirTransportation_multiplex",
+        # "humanHIV1_genetic_multiplex",
+        "Padgett-Florentine-Families_multiplex",
+        "netsci_co-authorship_multiplex",
+        "Lazega-Law-Firm_multiplex",
+    ]
+    date_test_n = [
+        # 214,
+        # 279,
+        # 1043,
+        # 18222,
+        # 4092,
+        # 56562,
+        # 14488,
+        # 450,
+        # 1005,
+        16,
+        1400,
+        71,
+    ]
+    data_test_layer = [
+        # (3,24),
+        # (2,3),
+        # (1,2),
+        # (1,2),
+        # (4,6),
+        # (1,2),
+        # (4, 8),
+        # (1, 11),
+        # (1, 5),
+        (1, 2),
+        (1, 2),
+        (1, 3),
+    ]
     # resolve model file
     if MODEL_FILE:
-        model_file = './models/{}'.format(MODEL_FILE)
+        model_file = "./models/g0-1_10w_TORCH-Model_GMM_30_50/{}".format(MODEL_FILE)
     else:
-        model_file = find_latest_ckpt('./models')
+        model_file = find_latest_ckpt('./models/g0-1_10w_TORCH-Model_GMM_30_50')
     if model_file is None:
         raise FileNotFoundError("No checkpoint found under ./models for community model")
     ## save_dir
