@@ -82,8 +82,8 @@ class MultiDismantler:
         else:
             self.loss = nn.MSELoss()
 
-        self.IsDoubleDQN = False
-        self.IsPrioritizedSampling = False
+        self.IsDoubleDQN = True
+        self.IsPrioritizedSampling = True
         self.IsMultiStepDQN = True     ##(if IsNStepDQN=False, N_STEP==1)
 
         ############----------------------------- variants of DQN(end) ------------------- ###################################

@@ -1,4 +1,8 @@
 import torch
+import logging
+import sys
+import psutil
+import time
 from torch import nn
 import torch.optim as optim
 import torch_sparse
@@ -51,19 +55,36 @@ NUM_MAX = 50
 REG_HIDDEN = 32
 M = 4  # how many edges selected each time for BA model
 
-BATCH_SIZE = 64
+BATCH_SIZE = 16
 initialization_stddev = 0.01 
 n_valid = 200 
 n_train = 1000 
 aux_dim = 4
 num_env = 1
 inf = 2147483647/2
+log_interval = 50
 #########################  embedding method ##########################################################
 max_bp_iter = 3
 aggregatorID = 0 #0:sum; 1:mean; 2:GCN
 embeddingMethod = 1   #0:structure2vec; 1:graphsage
 
 class MultiDismantler:
+    def setup_logger(self, log_dir="log", filename_prefix="training_log"):
+        os.makedirs(log_dir, exist_ok=True)
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        log_file = os.path.join(log_dir, f"{filename_prefix}_{ts}.txt")
+        logger = logging.getLogger(f"MultiDismantler_{ts}")
+        logger.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setFormatter(formatter)
+        fh = logging.FileHandler(log_file, mode='a')
+        fh.setFormatter(formatter)
+        logger.addHandler(sh)
+        logger.addHandler(fh)
+        logger.propagate = False
+        return logger
+
     def __init__(self):
         # init some parameters
         self.embedding_size = EMBEDDING_SIZE
@@ -74,6 +95,7 @@ class MultiDismantler:
         self.inputs = dict()
         self.reg_hidden = REG_HIDDEN
         self.utils = utils.Utils()
+        self.logger = self.setup_logger()
 
         ############----------------------------- variants of DQN(start) ------------------- ###################################
         self.IsHuberloss = False
@@ -82,8 +104,8 @@ class MultiDismantler:
         else:
             self.loss = nn.MSELoss()
 
-        self.IsDoubleDQN = False
-        self.IsPrioritizedSampling = False
+        self.IsDoubleDQN = True
+        self.IsPrioritizedSampling = True
         self.IsMultiStepDQN = True     ##(if IsNStepDQN=False, N_STEP==1)
 
         ############----------------------------- variants of DQN(end) ------------------- ###################################
@@ -93,10 +115,12 @@ class MultiDismantler:
         self.env_list=[]
         self.g_list=[]
         self.pred=[]
+        # prioritize with constrained capacity to control memory footprint
+        replay_capacity = 50000
         if self.IsPrioritizedSampling:
-            self.nStepReplayMem = nstep_replay_mem_prioritized.Memory(epsilon,alpha,beta,beta_increment_per_sampling,TD_err_upper,MEMORY_SIZE)
+            self.nStepReplayMem = nstep_replay_mem_prioritized.Memory(epsilon,alpha,beta,beta_increment_per_sampling,TD_err_upper,replay_capacity)
         else:
-            self.nStepReplayMem = nstep_replay_mem.NStepReplayMem(MEMORY_SIZE)
+            self.nStepReplayMem = nstep_replay_mem.NStepReplayMem(replay_capacity)
 
         for i in range(num_env):
             self.env_list.append(mvc_env.MvcEnv(NUM_MAX))
@@ -104,24 +128,28 @@ class MultiDismantler:
 
         self.test_env = mvc_env.MvcEnv(NUM_MAX)
 
-        print("CUDA:", torch.cuda.is_available())
+        self.logger.info(f"CUDA available: {torch.cuda.is_available()}")
         torch.set_num_threads(16)
 
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         
         layerNodeAttention_weight1 = BitwiseMultipyLogis(EMBEDDING_SIZE, dropout=0.5, alpha=0.5,
                                                         metapath_number=2, device = self.device)
-        self.MultiDismantler_net = MultiDismantler_net(layerNodeAttention_weight1, device=self.device, node_feat_dim=4)
-        self.MultiDismantler_net_T = MultiDismantler_net(layerNodeAttention_weight1, device=self.device, node_feat_dim=4)
+        self.MultiDismantler_net = MultiDismantler_net(layerNodeAttention_weight1, device=self.device, node_feat_dim=3)
+        self.MultiDismantler_net_T = MultiDismantler_net(layerNodeAttention_weight1, device=self.device, node_feat_dim=3)
         self.MultiDismantler_net.to(self.device)
         self.MultiDismantler_net_T.to(self.device)
 
         self.MultiDismantler_net_T.eval()
 
         self.optimizer = optim.Adam(self.MultiDismantler_net.parameters(), lr=self.learning_rate)
+        # AMP + grad accumulation
+        self.scaler = torch.cuda.amp.GradScaler()
+        self.accumulation_steps = 8
+        self.learn_step_counter = 0
 
         pytorch_total_params = sum(p.numel() for p in self.MultiDismantler_net.parameters())
-        print("Total number of MultiDismantler_net parameters: {}".format(pytorch_total_params))
+        self.logger.info("Total number of MultiDismantler_net parameters: {}".format(pytorch_total_params))
         self.flag = 1
     def gen_graph(self,num_min,num_max):
         max_n = num_max
@@ -130,12 +158,11 @@ class MultiDismantler:
         g = graph.Graph(cur_n)
         return g
 
-    def gen_new_graphs(self, num_min, num_max):
-        print('\ngenerating new training graphs...')
+    def gen_new_graphs(self, num_min, num_max, count=n_train):
+        self.logger.info('generating new training graphs...')
         sys.stdout.flush()
         self.ClearTrainGraphs()
-        #1000
-        for i in tqdm(range(n_train)):
+        for i in tqdm(range(count)):
             g = self.gen_graph(num_min, num_max)
             if g.max_rank == 1: #if generated graph's original Mcc = 1, then remove it. 
                 continue
@@ -158,8 +185,8 @@ class MultiDismantler:
             t = self.ngraph_train
             self.ngraph_train += 1
             self.TrainSet.InsertGraph(t, g)
-    def PrepareValidData(self):
-        for i in tqdm(range(n_valid)):
+    def PrepareValidData(self, count=n_valid):
+        for i in tqdm(range(count)):
             g = self.gen_graph(NUM_MIN, NUM_MAX)
             self.InsertGraph(g, is_test=True)
     def Run_simulator(self, num_seq, eps, TrainSet, n_step):
@@ -170,7 +197,11 @@ class MultiDismantler:
                 if self.env_list[i].graph.num_nodes == 0 or self.env_list[i].isTerminal():
                     if self.env_list[i].graph.num_nodes > 0 and self.env_list[i].isTerminal():
                         n = n + 1
-                        self.nStepReplayMem.add_from_env(self.env_list[i], n_step)
+                        # prioritized buffer exposes add; unify to add_from_env alias for compatibility
+                        if hasattr(self.nStepReplayMem, "add_from_env"):
+                            self.nStepReplayMem.add_from_env(self.env_list[i], n_step)
+                        else:
+                            self.nStepReplayMem.add(self.env_list[i], n_step)
                         #print ('add experience transition!')
                     g_sample = TrainSet.Sample()
                     self.env_list[i].s0(g_sample)
@@ -210,8 +241,17 @@ class MultiDismantler:
         self.inputs['n2nsum_param'] = self.SetupSparseT(PrepareBatchGraph1.n2nsum_param)
         self.inputs['laplacian_param'] = self.SetupSparseT(PrepareBatchGraph1.laplacian_param)
         self.inputs['subgsum_param'] = self.SetupSparseT(PrepareBatchGraph1.subgsum_param)
-        node_np = np.array(PrepareBatchGraph1.node_feat, dtype=np.float32)
-        self.inputs['node_input'] = torch.from_numpy(node_np).to(self.device)
+        try:
+            self.inputs['node_input'] = [torch.tensor(arr, dtype=torch.float32, device=self.device) for arr in PrepareBatchGraph1.node_feat]
+        except Exception as e:
+            self.logger.error(f"node_feat tensor conversion failed in SetupTrain: {e}, shapes={[getattr(f,'shape',None) for f in PrepareBatchGraph1.node_feat]}")
+            raise
+        self.inputs['node_batch'] = [PrepareBatchGraph1.node_batch[0].to(self.device),
+                                     PrepareBatchGraph1.node_batch[1].to(self.device)]
+        # consistency check: node_input length should match node_batch length
+        for l in range(2):
+            assert len(self.inputs['node_input'][l]) == len(self.inputs['node_batch'][l]), \
+                f"Layer {l} node_input size {len(self.inputs['node_input'][l])} != node_batch size {len(self.inputs['node_batch'][l])}"
         self.inputs['aux_input'] = Variable(torch.tensor(PrepareBatchGraph1.aux_feat).type(torch.FloatTensor)).to(self.device)
         self.inputs['adj'] = PrepareBatchGraph1.adj
         self.inputs['v_adj'] = PrepareBatchGraph1.virtual_adj
@@ -221,6 +261,12 @@ class MultiDismantler:
             "m": PrepareBatchGraph1.comm_pool["m"],
             "n": PrepareBatchGraph1.comm_pool["n"],
         }
+        self.inputs['community_index'] = PrepareBatchGraph1.community_index.to(self.device)
+        self.inputs['community_batch'] = PrepareBatchGraph1.community_batch.to(self.device)
+        self.inputs['node_batch'] = [PrepareBatchGraph1.node_batch[0].to(self.device),
+                                     PrepareBatchGraph1.node_batch[1].to(self.device)]
+        self.inputs['nodes'] = PrepareBatchGraph1.nodes_list.to(self.device)
+        self.inputs['nodes'] = PrepareBatchGraph1.nodes_list.to(self.device)
 
     def temp_prepareBatchGraph(self,prepareBatchGraph):
         prepareBatchGraph.act_select = prepareBatchGraph.act_select[0]
@@ -243,8 +289,16 @@ class MultiDismantler:
 
         self.inputs['subgsum_param'] = self.SetupSparseT(PrepareBatchGraph1.subgsum_param)
 
-        node_np = np.array(PrepareBatchGraph1.node_feat, dtype=np.float32)
-        self.inputs['node_input'] = torch.from_numpy(node_np).to(self.device)
+        try:
+            self.inputs['node_input'] = [torch.tensor(arr, dtype=torch.float32, device=self.device) for arr in PrepareBatchGraph1.node_feat]
+        except Exception as e:
+            self.logger.error(f"node_feat tensor conversion failed in SetuppredAll: {e}, shapes={[getattr(f,'shape',None) for f in PrepareBatchGraph1.node_feat]}")
+            raise
+        self.inputs['node_batch'] = [PrepareBatchGraph1.node_batch[0].to(self.device),
+                                     PrepareBatchGraph1.node_batch[1].to(self.device)]
+        for l in range(2):
+            assert len(self.inputs['node_input'][l]) == len(self.inputs['node_batch'][l]), \
+                f"Layer {l} node_input size {len(self.inputs['node_input'][l])} != node_batch size {len(self.inputs['node_batch'][l])}"
         self.inputs['aux_input'] = Variable(torch.tensor(PrepareBatchGraph1.aux_feat).type(torch.FloatTensor)).to(self.device)
         self.inputs['adj'] = PrepareBatchGraph1.adj
         self.inputs['v_adj'] = PrepareBatchGraph1.virtual_adj
@@ -254,6 +308,10 @@ class MultiDismantler:
             "m": PrepareBatchGraph1.comm_pool["m"],
             "n": PrepareBatchGraph1.comm_pool["n"],
         }
+        self.inputs['community_index'] = PrepareBatchGraph1.community_index.to(self.device)
+        self.inputs['community_batch'] = PrepareBatchGraph1.community_batch.to(self.device)
+        self.inputs['node_batch'] = [PrepareBatchGraph1.node_batch[0].to(self.device),
+                                     PrepareBatchGraph1.node_batch[1].to(self.device)]
         return PrepareBatchGraph1.idx_map_list
 
     def Predict(self,g_list,covered,remove_edges,isSnapSnot):
@@ -271,11 +329,13 @@ class MultiDismantler:
             if isSnapSnot:
                 result = self.MultiDismantler_net_T.test_forward(node_input=self.inputs['node_input'],\
                     subgsum_param=self.inputs['subgsum_param'], n2nsum_param=self.inputs['n2nsum_param'],\
-                    rep_global=self.inputs['rep_global'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'], comm_pool=self.inputs['comm_pool'])
+                    rep_global=self.inputs['rep_global'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'], comm_pool=self.inputs['comm_pool'],\
+                    node_batch=self.inputs['node_batch'], community_index=self.inputs['community_index'], community_batch=self.inputs['community_batch'])
             else:
                 result = self.MultiDismantler_net.test_forward(node_input=self.inputs['node_input'],\
                     subgsum_param=self.inputs['subgsum_param'], n2nsum_param=self.inputs['n2nsum_param'],\
-                    rep_global=self.inputs['rep_global'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'], comm_pool=self.inputs['comm_pool'])
+                    rep_global=self.inputs['rep_global'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'], comm_pool=self.inputs['comm_pool'],\
+                    node_batch=self.inputs['node_batch'], community_index=self.inputs['community_index'], community_batch=self.inputs['community_batch'])
             # TOFIX: line below used to be raw_output = result[0]. This is weird because results is supposed to be 
             # [node_cnt, 1] (Q-values per node). And indeed it resulted in an error! I have fixed it by the line below
             # look inito it later.
@@ -297,11 +357,11 @@ class MultiDismantler:
             assert (pos == len(raw_output))
         return pred
 
-    def PredictWithCurrentQNet(self,g_list,covered,remove_edges):
+    def PredictWithCurrentQNet(self,g_list,covered,remove_edges=None):
         result = self.Predict(g_list,covered,remove_edges,False)
         return result
 
-    def PredictWithSnapshot(self,g_list,covered,remove_edges):
+    def PredictWithSnapshot(self,g_list,covered,remove_edges=None):
         result = self.Predict(g_list,covered,remove_edges,True)
         return result
     #pass
@@ -309,7 +369,11 @@ class MultiDismantler:
         self.MultiDismantler_net_T.load_state_dict(self.MultiDismantler_net.state_dict())
 
     def Fit(self):
-        sample = self.nStepReplayMem.sampling(BATCH_SIZE)
+        try:
+            sample = self.nStepReplayMem.sampling(BATCH_SIZE)
+        except ValueError as e:
+            self.logger.warning(f"Sampling skipped: {e}")
+            return 0.0
         ness = False
         for i in range(BATCH_SIZE):
             if (not sample.list_term[i]):
@@ -321,7 +385,8 @@ class MultiDismantler:
                 double_list_predT = self.PredictWithSnapshot(sample.g_list, sample.list_s_primes)
                 list_pred = [a[self.argMax(b)] for a, b in zip(double_list_predT, double_list_pred)]
             else:
-                list_pred = self.PredictWithSnapshot(sample.g_list, sample.list_s_primes, sample.list_s_primes_edges)
+                # remove_edges are not stored in replay; pass None to avoid attribute errors
+                list_pred = self.PredictWithSnapshot(sample.g_list, sample.list_s_primes, None)
 
         list_target = np.zeros([BATCH_SIZE, 1])
 
@@ -341,70 +406,77 @@ class MultiDismantler:
             return self.fit(sample.g_list, sample.list_st, sample.list_at,list_target, sample.list_st_edges)
 
     def fit_with_prioritized(self,tree_idx,ISWeights,g_list,covered,actions,list_target):
-        '''
-        loss = 0.0
+        loss_values = 0.0
         n_graphs = len(g_list)
-        i, j, bsize
-        for i in range(0,n_graphs,BATCH_SIZE):
-            bsize = BATCH_SIZE
-            if (i + BATCH_SIZE) > n_graphs:
-                bsize = n_graphs - i
-            batch_idxes = np.zeros(bsize)
-            # batch_idxes = []
-            for j in range(i, i + bsize):
-                batch_idxes[j-i] = j
-                # batch_idxes.append(j)
-            batch_idxes = np.int32(batch_idxes)
+        # single batch with importance weights
+        batch_idxes = np.arange(n_graphs, dtype=np.int32)
+        self.SetupTrain(batch_idxes, g_list, covered, actions,list_target)
+        is_weights = torch.tensor(ISWeights, dtype=torch.float32, device=self.device).view(-1,1)
+        with torch.cuda.amp.autocast():
+            q_pred, cur_message_layer = self.MultiDismantler_net.train_forward(node_input=self.inputs['node_input'],\
+                subgsum_param=self.inputs['subgsum_param'], n2nsum_param=self.inputs['n2nsum_param'],\
+                action_select=self.inputs['action_select'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'], comm_pool=self.inputs['comm_pool'],\
+                node_batch=self.inputs['node_batch'], community_index=self.inputs['community_index'], community_batch=self.inputs['community_batch'])
 
-            self.SetupTrain(batch_idxes, g_list, covered, actions,list_target)
-            my_dict = {}
-            my_dict[self.action_select] = self.inputs['action_select']
-            my_dict[self.rep_global] = self.inputs['rep_global']
-            my_dict[self.n2nsum_param] = self.inputs['n2nsum_param']
-            my_dict[self.laplacian_param] = self.inputs['laplacian_param']
-            my_dict[self.subgsum_param] = self.inputs['subgsum_param']
-            my_dict[self.aux_input] = np.array(self.inputs['aux_input'])
-            my_dict[self.ISWeights] = np.mat(ISWeights).T
-            my_dict[self.target] = self.inputs['target']
-
-            result = self.session.run([self.trainStep,self.TD_errors,self.loss],feed_dict=my_dict)
-            self.nStepReplayMem.batch_update(tree_idx, result[1])
-            loss += result[2]*bsize
-        return loss / len(g_list)
-        '''
-        return None
+            loss, td_errors = self.calc_loss(q_pred, cur_message_layer, is_weights=is_weights)
+            loss = loss / self.accumulation_steps
+        self.scaler.scale(loss).backward()
+        self.learn_step_counter += 1
+        if (self.learn_step_counter % self.accumulation_steps) == 0:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.optimizer.zero_grad()
+        # update priorities
+        self.nStepReplayMem.batch_update(tree_idx, td_errors.cpu().numpy())
+        loss_values += loss.item()*n_graphs
+        if (self.learn_step_counter % log_interval) == 0:
+            avg_q = float(q_pred.mean().detach().cpu().item())
+            td_abs = float(td_errors.mean().detach().cpu().item())
+            level = logging.CRITICAL if avg_q > 10000 else logging.INFO
+            self.logger.log(level, f"  [Train-PER] Step: {self.learn_step_counter} | Loss: {loss.item():.4f} | AvgQ: {avg_q:.4f} | TD: {td_abs:.4f}")
+        return loss_values / n_graphs
 
 
     def fit(self,g_list,covered,actions,list_target,remove_edges):
         loss_values = 0.0
         n_graphs = len(g_list)
+        self.optimizer.zero_grad()
         for i in range(0,n_graphs,BATCH_SIZE):
-            self.optimizer.zero_grad()
-
             bsize = BATCH_SIZE
             if (i + BATCH_SIZE) > n_graphs:
                 bsize = n_graphs - i
             batch_idxes = np.zeros(bsize)
-            # batch_idxes = []
             for j in range(i, i + bsize):
                 batch_idxes[j-i] = j
-                # batch_idxes.append(j)
             batch_idxes = np.int32(batch_idxes)
             self.SetupTrain(batch_idxes, g_list, covered, actions,list_target, remove_edges)
-            #Node inpute is NONE for not costed scnario
-            q_pred, cur_message_layer = self.MultiDismantler_net.train_forward(node_input=self.inputs['node_input'],\
-                subgsum_param=self.inputs['subgsum_param'], n2nsum_param=self.inputs['n2nsum_param'],\
-                action_select=self.inputs['action_select'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'], comm_pool=self.inputs['comm_pool'])
+            with torch.cuda.amp.autocast():
+                q_pred, cur_message_layer = self.MultiDismantler_net.train_forward(node_input=self.inputs['node_input'],\
+                    subgsum_param=self.inputs['subgsum_param'], n2nsum_param=self.inputs['n2nsum_param'],\
+                    action_select=self.inputs['action_select'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'], comm_pool=self.inputs['comm_pool'],\
+                    node_batch=self.inputs['node_batch'], community_index=self.inputs['community_index'], community_batch=self.inputs['community_batch'])
 
-            loss = self.calc_loss(q_pred, cur_message_layer)
-            loss.backward()
-            self.optimizer.step()
+                loss, _ = self.calc_loss(q_pred, cur_message_layer)
+                loss = loss / self.accumulation_steps
+            self.scaler.scale(loss).backward()
+
+            self.learn_step_counter += 1
+            if (self.learn_step_counter % self.accumulation_steps) == 0:
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                self.optimizer.zero_grad()
+
+            if (self.learn_step_counter % log_interval) == 0:
+                avg_q = float(q_pred.mean().detach().cpu().item())
+                td_abs = float((self.inputs['target'] - q_pred).abs().mean().detach().cpu().item())
+                level = logging.CRITICAL if avg_q > 10000 else logging.INFO
+                self.logger.log(level, f"  [Train] Step: {self.learn_step_counter} | Loss: {loss.item():.4f} | AvgQ: {avg_q:.4f} | TD: {td_abs:.4f}")
 
             loss_values += loss.item()*bsize
 
         return loss_values / len(g_list)
 
-    def calc_loss(self, q_pred, cur_message_layer) :
+    def calc_loss(self, q_pred, cur_message_layer, is_weights=None) :
         # first order reconstruction loss
         # OLD loss_recons = 2 * torch.trace(torch.matmul(torch.transpose(cur_message_layer,0,1),\
         #    torch.matmul(self.inputs['laplacian_param'], cur_message_layer)))
@@ -421,17 +493,30 @@ class MultiDismantler:
             #edge_num = torch.sum(self.inputs['n2nsum_param'])
             loss_recons = torch.divide(loss_recons, edge_num)                  
             loss2 = torch.add(loss2,loss_recons)
-        loss1 = torch.add(loss1,self.loss(self.inputs['target'], q_pred))
+        td = self.inputs['target'] - q_pred
+        if is_weights is not None:
+            loss1 = torch.add(loss1, torch.mean(is_weights * (td ** 2)))
+        else:
+            loss1 = torch.add(loss1,self.loss(self.inputs['target'], q_pred))
         # with open('loss_30-50_woCLA.txt', 'a') as f:
         #     f.write("{} {}\n".format(loss1.item(), loss2.item()))
         loss = torch.add(loss1, loss2, alpha = Alpha)
-        return loss
+        td_errors = torch.abs(td).detach().squeeze()
+        return loss, td_errors
 
-    def Train(self, skip_saved_iter=False):
-        self.PrepareValidData()   
-        self.gen_new_graphs(NUM_MIN, NUM_MAX)   
-        for i in range(10):
-            self.PlayGame(100, 1)
+    def Train(self, skip_saved_iter=False, smoke_test=False):
+        # optional fast-path for smoke tests: set smoke_test=True or env SMOKE_TEST=1
+        fast = smoke_test or os.getenv("SMOKE_TEST", "0") == "1"
+        train_count = int(os.getenv("SMOKE_TRAIN", "50" if fast else str(n_train)))
+        valid_count = int(os.getenv("SMOKE_VALID", "5" if fast else str(n_valid)))
+        warmup_games = 0 if fast else 10
+        warmup_traj = 5 if fast else 100
+        if fast:
+            self.logger.info(f"SMOKE_TEST enabled: train_count={train_count}, valid_count={valid_count}, warmup_games={warmup_games}, warmup_traj={warmup_traj}")
+        self.PrepareValidData(valid_count)   
+        self.gen_new_graphs(NUM_MIN, NUM_MAX, count=train_count)   
+        for i in range(warmup_games):
+            self.PlayGame(warmup_traj, 1)
         self.TakeSnapShot()
         eps_start = 1.0
         eps_end = 0.05
@@ -475,29 +560,29 @@ class MultiDismantler:
             start = time.perf_counter()
             ###########-----------------------normal training data setup(start) -----------------##############################
             if( (iter and iter % SAVE_FREQUENCY == 0) or (iter==start_iter)):
-                self.gen_new_graphs(NUM_MIN, NUM_MAX)
+                self.gen_new_graphs(NUM_MIN, NUM_MAX, count=train_count)
             eps = eps_end + max(0., (eps_start - eps_end) * (eps_step - iter) / eps_step)
             if iter % 10 == 0:
-                self.PlayGame(10, eps)
-            if iter % SAVE_FREQUENCY == 0:
+                self.PlayGame(10 if not fast else 2, eps)
+            if (not fast) and iter % SAVE_FREQUENCY == 0:
                 if(iter == 0 or iter == start_iter):
                     N_start = start
                 else:
                     N_start = N_end
                 frac = 0.0
                 test_start = time.time()
-                for idx in range(n_valid):
+                for idx in range(valid_count):
                     frac += self.Test(idx)
                 if frac < best_frac :
                     best_frac = frac
                     self.SaveModel('%s/best_model.ckpt' % (save_dir))
                 test_end = time.time()
-                f_out.write('%.16f\n'%(frac/n_valid))   #write vc into the file
+                f_out.write('%.16f\n'%(frac/valid_count))   #write vc into the file
                 f_out.flush()
-                print('iter %d, eps %.4f, average size of vc:%.6f'%(iter, eps, frac/n_valid))
-                print ('testing 200 graphs time: %.2fs'%(test_end-test_start))
+                self.logger.info('iter %d, eps %.4f, average size of vc:%.6f'%(iter, eps, frac/valid_count))
+                self.logger.info('testing %d graphs time: %.2fs'%(valid_count, test_end-test_start))
                 N_end = time.perf_counter()
-                print ('500 iterations total time: %.2fs\n'%(N_end-N_start))
+                self.logger.info('500 iterations total time: %.2fs'%(N_end-N_start))
                 sys.stdout.flush()
                 model_path = '%s/nrange_%d_%d_iter_%d.ckpt' % (save_dir, NUM_MIN, NUM_MAX, iter)
                 if(skip_saved_iter and iter==start_iter):
@@ -507,6 +592,15 @@ class MultiDismantler:
                         self.SaveModel(model_path)
             if( (iter % UPDATE_TIME == 0) or (iter==start_iter)):
                 self.TakeSnapShot()
+            # episode-level logging for resources and rewards
+            ram_pct = psutil.virtual_memory().percent
+            vram_gb = torch.cuda.memory_allocated(self.device) / (1024**3) if torch.cuda.is_available() else 0.0
+            level = logging.WARNING if vram_gb > 5.8 else logging.INFO
+            ep_reward = sum(self.env_list[0].reward_seq) if self.env_list and self.env_list[0].reward_seq else 0.0
+            ep_steps = len(self.env_list[0].reward_seq) if self.env_list else 0
+            elapsed = time.time() - start
+            self.logger.log(level, f"Ep/Iter: {iter} | R: {ep_reward:.2f} | Steps: {ep_steps} | Eps: {eps:.4f} | RAM: {ram_pct:.1f}% | VRAM: {vram_gb:.2f}GB | Time: {elapsed:.1f}s")
+
             self.Fit()
             # for name, param in self.MultiDismantler_net.named_parameters():
             #     print("Parameter:", name)
@@ -826,5 +920,3 @@ def get_ci_dict(graph):
     degrees = dict(graph.degree()) 
     ci_values = {node: basic_ci(graph, node, degrees) for node in graph.nodes()}
     return ci_values
-
-

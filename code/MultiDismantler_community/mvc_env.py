@@ -51,25 +51,59 @@ class MvcEnv:
         self.G2 = None
         self.getMaxConnectedNodesNum()
     def step(self, a):
-       
+        """
+        Cascade-aware step: simulate removal of `a`, find nodes that fall out of the LMCC (via connected components),
+        reward = 1 + |cascade_nodes|, then remove action + cascade nodes in the real environment.
+        """
         assert self.graph
         assert a not in self.covered_set
 
         self.state_seq.append(self.action_list.copy()) 
         remove_edge = [self.remove_edge[0].copy(),self.remove_edge[1].copy()]
         self.state_seq_edges.append(remove_edge)
-        self.act_seq.append(a)  
-        self.covered_set.add(a)  
-        self.action_list.append(a)  
-        for i in range(2):
-            for neigh in self.graph.adj_list[i][a][1]:              
-                    if neigh not in self.covered_set and (neigh,a) not in self.remove_edge[i]:
-                        self.numCoveredEdges[i] += 1 
-                    
-        r_t = self.getReward(a)  
-        self.reward_seq.append(r_t)  
-        self.sum_rewards.append(r_t)                 
-        return r_t
+        self.act_seq.append(a)
+
+        # Build simulated union graph without covered nodes and without action node
+        alive_nodes = [n for n in range(self.graph.num_nodes) if n not in self.covered_set and n != a]
+        G_sim = nx.Graph()
+        G_sim.add_nodes_from(alive_nodes)
+        for layer in range(2):
+            for i, neighbors in self.graph.adj_list[layer]:
+                if i in self.covered_set or i == a:
+                    continue
+                for j in neighbors:
+                    if j in self.covered_set or j == a:
+                        continue
+                    if (i, j) in self.remove_edge[layer]:
+                        continue
+                    if G_sim.has_edge(i, j):
+                        continue
+                    G_sim.add_edge(i, j)
+
+        components = list(nx.connected_components(G_sim))
+        if components:
+            lmcc_set = max(components, key=len)
+        else:
+            lmcc_set = set()
+        all_remaining_nodes = set(G_sim.nodes())
+        cascade_nodes = all_remaining_nodes - lmcc_set
+
+        reward = 1.0 + len(cascade_nodes)
+
+        nodes_to_remove = cascade_nodes | {a}
+        for node in nodes_to_remove:
+            if node in self.covered_set:
+                continue
+            self.covered_set.add(node)
+            self.action_list.append(node)
+            for i in range(2):
+                for neigh in self.graph.adj_list[i][node][1]:
+                    if neigh not in self.covered_set and (neigh, node) not in self.remove_edge[i]:
+                        self.numCoveredEdges[i] += 1
+
+        self.reward_seq.append(reward)
+        self.sum_rewards.append(reward)
+        return reward
 
     def stepWithoutReward(self, a):
      

@@ -1,5 +1,6 @@
 import random
 from typing import List, Tuple
+import copy
 from mvc_env import MvcEnv
 '''
 Data class:
@@ -158,6 +159,7 @@ class Memory:
         self.beta = beta
         self.beta_increment_per_sampling = beta_increment_per_sampling
         self.abs_err_upper = abs_err_upper
+        self.n_entries = 0
 
     def store(self, transition: Data):
         """
@@ -170,6 +172,7 @@ class Memory:
         if max_p == 0:
             max_p = self.abs_err_upper
         self.tree.add(max_p, transition)
+        self.n_entries = min(self.n_entries + 1, self.tree.capacity)
 
     def add(self, env: MvcEnv, n_step: int):
         """
@@ -201,7 +204,7 @@ class Memory:
                 s_prime = env.state_seq[i + n_step].copy()
 
             transition = Data()
-            transition.g = env.graph
+            transition.g = copy.deepcopy(env.graph)
             transition.s_t = env.state_seq[i].copy()
             transition.a_t = env.act_seq[i]
             transition.r_t = cur_r
@@ -220,12 +223,16 @@ class Memory:
         Returns:
         ReplaySample object containing the sampled data.
         """
+        if self.n_entries == 0 or batch_size > self.n_entries:
+            raise ValueError("Not enough samples in buffer to sample.")
         result = ReplaySample(batch_size)
         total_p = self.tree.tree[0]
+        if total_p <= 0:
+            raise ValueError("SumTree has non-positive total priority.")
         pri_seg = total_p / batch_size
         self.beta = min(1.0, self.beta + self.beta_increment_per_sampling)
 
-        min_prob = self.tree.minElement / total_p
+        min_prob = max(self.tree.minElement, 1e-6) / max(total_p, 1e-6)
 
         for i in range(batch_size):
             a = pri_seg * i
@@ -233,7 +240,7 @@ class Memory:
             v = random.uniform(a, b)
             leaf_result = self.tree.get_leaf(v)
             result.b_idx[i] = leaf_result.leaf_idx
-            prob = leaf_result.p / total_p
+            prob = max(leaf_result.p / max(total_p, 1e-6), 1e-6)
             result.ISWeights[i] = (prob / min_prob) ** -self.beta
             result.g_list.append(leaf_result.data.g)
             result.list_st.append(leaf_result.data.s_t)
@@ -253,7 +260,7 @@ class Memory:
         - abs_errors: The priority of the update.
         """
         for i in range(len(tree_idx)):
-            abs_errors[i] += self.epsilon
+            abs_errors[i] = max(abs_errors[i] + self.epsilon, 1e-6)
             clipped_error = min(abs_errors[i], self.abs_err_upper)
             ps = clipped_error ** self.alpha
             self.tree.update(tree_idx[i], ps)

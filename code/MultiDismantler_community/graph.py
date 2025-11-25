@@ -36,12 +36,14 @@ class Graph:
             self.max_rank = 0
             self.weights =[{},{}]
             self.community_partition = {}
+            self.node_participation = []
+            self.node_zscore = []
             self.ori_rank(G1,G2)
-            self.community_features = []
-            self._compute_community_features()
+            self._calc_static_community_features()
         else:
             self.community_partition = {}
-            self.community_features = []
+            self.node_participation = []
+            self.node_zscore = []
             
     def reshape_graph(self, num_nodes, num_edges, edges_from, edges_to):
         self.num_nodes = num_nodes
@@ -60,11 +62,12 @@ class Graph:
         connected_components = Mcc.MCC(G1.copy(),G2.copy(),remove_edge)
         self.max_rank = Mcc.find_max_set_length(connected_components)
     
-    def _compute_community_features(self):
-        """Compute community-aware features (internal/external ratio and community size ratio)."""
+    def _calc_static_community_features(self):
+        """Compute community-aware static features: participation coefficient P and within-module z-score."""
         if self.num_nodes == 0:
-            self.community_features = []
             self.community_partition = {}
+            self.node_participation = []
+            self.node_zscore = []
             return
 
         G_nx = nx.Graph()
@@ -81,22 +84,51 @@ class Graph:
             partition = {i: 0 for i in range(self.num_nodes)}
         self.community_partition = partition.copy()
 
-        community_sizes = defaultdict(int)
-        for comm_id in partition.values():
-            community_sizes[comm_id] += 1
-
-        eps = 1e-8
-        features = np.zeros((self.num_nodes, 3), dtype=np.float32)
+        # precompute degrees by community
+        comm_degrees = defaultdict(list)
+        node_degree = dict(G_nx.degree())
+        # participation: k_i^in per community
         for v in range(self.num_nodes):
+            v_comm = partition.get(v, 0)
             neighbors = list(G_nx.neighbors(v))
             k_total = len(neighbors)
-            k_in = sum(1 for n in neighbors if partition.get(n, -1) == partition.get(v, -1))
-            k_out = k_total - k_in
-            features[v, 0] = k_in / (k_total + eps)              # Internal Ratio
-            features[v, 1] = k_out / (k_total + eps)             # External Ratio
-            features[v, 2] = community_sizes[partition[v]] / float(self.num_nodes)  # Community Size Ratio
+            # count edges to each community
+            comm_counts = defaultdict(int)
+            for n in neighbors:
+                comm_counts[partition.get(n, 0)] += 1
+            k_in = comm_counts[v_comm]
+            comm_degrees[v_comm].append(k_in)
+        # compute mean/std per community for k_in
+        comm_stats = {}
+        for comm, vals in comm_degrees.items():
+            arr = np.array(vals, dtype=np.float32)
+            mean = float(arr.mean()) if len(arr) > 0 else 0.0
+            std = float(arr.std()) if len(arr) > 0 else 0.0
+            comm_stats[comm] = (mean, std)
 
-        self.community_features = features
+        eps = 1e-8
+        participation = np.zeros(self.num_nodes, dtype=np.float32)
+        zscore = np.zeros(self.num_nodes, dtype=np.float32)
+        for v in range(self.num_nodes):
+            v_comm = partition.get(v, 0)
+            neighbors = list(G_nx.neighbors(v))
+            k_total = len(neighbors)
+            if k_total == 0:
+                participation[v] = 0.0
+                zscore[v] = 0.0
+                continue
+            comm_counts = defaultdict(int)
+            for n in neighbors:
+                comm_counts[partition.get(n, 0)] += 1
+            # Participation coefficient: P_i = 1 - sum_s (k_is/k_i)^2
+            participation[v] = 1.0 - sum((cnt / k_total) ** 2 for cnt in comm_counts.values())
+            k_in = comm_counts[v_comm]
+            mean_c, std_c = comm_stats.get(v_comm, (0.0, 0.0))
+            # within-module z-score: z_i = (k_in - mean_c) / std_c
+            zscore[v] = (k_in - mean_c) / std_c if std_c > 0 else 0.0
+
+        self.node_participation = participation
+        self.node_zscore = zscore
 
     def _run_louvain(self, G_nx):
         """Run Louvain if available; fallback to python-louvain; otherwise return empty mapping."""
@@ -141,8 +173,9 @@ class Graph_test:
         self.max_rank = 0
         self.weights =[{},{}]
         self.ori_rank(G1,G2)
-        self.community_features = []
         self.community_partition = {}
+        self.node_participation = []
+        self.node_zscore = []
         self._compute_community_features(G1, G2)
         
     def ori_rank(self,G1,G2):
@@ -152,10 +185,11 @@ class Graph_test:
         return G1, G2
     
     def _compute_community_features(self, G1, G2):
-        """Compute community features for test graphs using merged layers."""
+        """Compute participation and z-score for test graphs using merged layers."""
         if self.num_nodes == 0:
-            self.community_features = []
             self.community_partition = {}
+            self.node_participation = []
+            self.node_zscore = []
             return
         G_nx = nx.Graph()
         G_nx.add_nodes_from(range(self.num_nodes))
@@ -176,20 +210,41 @@ class Graph_test:
             partition = {i: 0 for i in range(self.num_nodes)}
         self.community_partition = partition.copy()
 
-        community_sizes = defaultdict(int)
-        for comm_id in partition.values():
-            community_sizes[comm_id] += 1
-
-        eps = 1e-8
-        features = np.zeros((self.num_nodes, 3), dtype=np.float32)
+        comm_degrees = defaultdict(list)
         for v in range(self.num_nodes):
+            v_comm = partition.get(v, 0)
+            neighbors = list(G_nx.neighbors(v))
+            comm_counts = defaultdict(int)
+            for n in neighbors:
+                comm_counts[partition.get(n, 0)] += 1
+            k_in = comm_counts[v_comm]
+            comm_degrees[v_comm].append(k_in)
+
+        comm_stats = {}
+        for comm, vals in comm_degrees.items():
+            arr = np.array(vals, dtype=np.float32)
+            mean = float(arr.mean()) if len(arr) > 0 else 0.0
+            std = float(arr.std()) if len(arr) > 0 else 0.0
+            comm_stats[comm] = (mean, std)
+
+        participation = np.zeros(self.num_nodes, dtype=np.float32)
+        zscore = np.zeros(self.num_nodes, dtype=np.float32)
+        for v in range(self.num_nodes):
+            v_comm = partition.get(v, 0)
             neighbors = list(G_nx.neighbors(v))
             k_total = len(neighbors)
-            k_in = sum(1 for n in neighbors if partition.get(n, -1) == partition.get(v, -1))
-            k_out = k_total - k_in
-            features[v, 0] = k_in / (k_total + eps)
-            features[v, 1] = k_out / (k_total + eps)
-            features[v, 2] = community_sizes[partition[v]] / float(self.num_nodes)
+            if k_total == 0:
+                participation[v] = 0.0
+                zscore[v] = 0.0
+                continue
+            comm_counts = defaultdict(int)
+            for n in neighbors:
+                comm_counts[partition.get(n, 0)] += 1
+            participation[v] = 1.0 - sum((cnt / k_total) ** 2 for cnt in comm_counts.values())
+            k_in = comm_counts[v_comm]
+            mean_c, std_c = comm_stats.get(v_comm, (0.0, 0.0))
+            zscore[v] = (k_in - mean_c) / std_c if std_c > 0 else 0.0
 
-        self.community_features = features
+        self.node_participation = participation
+        self.node_zscore = zscore
     

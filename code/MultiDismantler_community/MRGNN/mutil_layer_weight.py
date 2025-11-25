@@ -26,45 +26,44 @@ class LayerNodeAttention_weight(nn.Module):
 
 
     def forward(self, node_features, nodes_ori):
-        nodes_ori = np.array(nodes_ori)
-        nodes_ori = nodes_ori.tolist()
-        nodes = torch.tensor(np.unique(nodes_ori))
+        # Nuclear fix: ignore external nodes_ori, rebuild compact index from current features
+        current_active_count = node_features[0].size(0)
+        compact_nodes = np.arange(current_active_count)
+        nodes = torch.tensor(compact_nodes, device=node_features[0].device)
         temp_fea_t = []
         for kk in range(self.metapath_number):
-            temp_fea_t.append(torch.zeros(len(nodes),node_features[kk].shape[1]))
+            temp_fea_t.append(torch.zeros(len(nodes), node_features[kk].shape[1], device=node_features[kk].device))
         for i in range(len(nodes)):
-            index_ = nodes_ori.index(nodes[i])
+            index_ = int(nodes[i].item())
             for kj in range(self.metapath_number):
                 temp_fea_t[kj][i] = node_features[kj][index_]
         for kl in range(self.metapath_number):
-            node_features[kl] = torch.tanh(torch.matmul(temp_fea_t[kl],self.trans)+self.bias)
+            node_features[kl] = torch.tanh(torch.matmul(temp_fea_t[kl], self.trans) + self.bias)
         node_features = torch.stack(node_features)
         layer_all_attention = torch.stack([
             self.layer_node_attention(node_features, i) for i in range(node_features.shape[1])
         ])
-        Z = torch.zeros(node_features.shape[1],node_features.shape[2])
+        Z = torch.zeros(node_features.shape[1], node_features.shape[2], device=node_features.device)
         for i in range(node_features.shape[1]):
-            adj = layer_all_attention[i] 
-            weight = [0 for i in range(self.metapath_number)]
+            adj = layer_all_attention[i]
+            weight = [0 for _ in range(self.metapath_number)]
             for j in range(adj.shape[0]):
                 if j == self.layer_predict:
                     continue
-                cat_hi = torch.cat((adj[self.layer_predict],adj[j]), dim=0)
+                cat_hi = torch.cat((adj[self.layer_predict], adj[j]), dim=0)
                 weight_t = math.exp(self.leakyReLU(self.attention.matmul(cat_hi)))
-                weight[j] = weight_t if weight_t<1 else 1
+                weight[j] = weight_t if weight_t < 1 else 1
             temp = Z[i]
             for k in range(adj.shape[0]):
-                if k==self.layer_predict:
+                if k == self.layer_predict:
                     continue
-                temp +=(weight[k] / sum(weight)) *adj[k]
+                temp += (weight[k] / sum(weight)) * adj[k]
             Z[i] = temp
-        X = node_features[self.layer_predict]+Z
-        result = torch.zeros(len(nodes_ori),X.shape[1])
-        nodes_tolist = nodes.tolist()
-        for m in range(len(nodes_ori)):
-            index_nodes = nodes_tolist.index(nodes_ori[m])
-            result[m] = X[index_nodes]
-        return  result
+        X = node_features[self.layer_predict] + Z
+        result = torch.zeros(current_active_count, X.shape[1], device=node_features.device)
+        for m in range(current_active_count):
+            result[m] = X[m]
+        return result
 
     def transZshape(self, z, dim, i):
         matrics = torch.zeros(dim, 1)
