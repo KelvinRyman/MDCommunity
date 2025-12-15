@@ -10,6 +10,7 @@ from MRGNN.aggregators import MeanAggregator, LSTMAggregator, PoolAggregator
 from MRGNN.utils import LogisticRegression
 from MRGNN.mutil_layer_weight import LayerNodeAttention_weight, Cosine_similarity, SemanticAttention, \
     BitwiseMultipyLogis
+import os
 import sys
 # cudnn.benchmark = False
 # cudnn.deterministic = True
@@ -21,7 +22,7 @@ import sys
 class MultiDismantler_net(nn.Module):
     def __init__(self, layerNodeAttention_weight,
                  embedding_size=64, w_initialization_std=1, reg_hidden=32, max_bp_iter=3,
-                 embeddingMethod=1, aux_dim=4, device=None, node_attr=False, node_feat_dim=3):
+                 embeddingMethod=1, aux_dim=4, device=None, node_attr=False):
         super(MultiDismantler_net, self).__init__()
 
         self.layerNodeAttention_weight = layerNodeAttention_weight
@@ -36,19 +37,14 @@ class MultiDismantler_net(nn.Module):
         self.aux_dim = aux_dim
         self.device = device
         self.node_attr = node_attr
-        self.node_feat_dim = node_feat_dim
         self.act = nn.ReLU()
-        # Soft-partition community gate: maps [P, z] -> scalar in (0,1)
-        self.comm_gate = nn.Sequential(
-            nn.Linear(2, self.embedding_size),
-            nn.ReLU(),
-            nn.Linear(self.embedding_size, 1),
-            nn.Sigmoid(),
-        )
+        self.comm_scale = float(os.getenv("CE_COMM_SCALE", "1.0"))
         
-        # [node_feat_dim, embed_dim]
+        # [2, embed_dim]
         self.w_n2l = nn.parameter.Parameter(data=self.rand_generator(0, self.w_initialization_std,\
-                                                                     size=(self.node_feat_dim, self.embedding_size)))
+                                                                     size=(2, self.embedding_size)))
+        # [2, embed_dim] community residual projection (z-score, participation)
+        self.w_comm = nn.parameter.Parameter(data=torch.zeros((2, self.embedding_size)))
         # [embed_dim, embed_dim]
         self.p_node_conv = nn.parameter.Parameter(data=self.rand_generator(0, self.w_initialization_std,\
                                                                            size=(self.embedding_size, self.embedding_size)))
@@ -97,35 +93,32 @@ class MultiDismantler_net(nn.Module):
                                                                      size=(128, 1)))
         
         self.flag = 0
-    def train_forward(self, node_input, subgsum_param, n2nsum_param, action_select, aux_input, adj, v_adj):
+    def train_forward(self, node_input, subgsum_param, n2nsum_param, action_select, aux_input, comm_input=None, adj=None, v_adj=None):
         
         nodes_cnt = n2nsum_param[0]['m']
-        if node_input is None:
-            node_input = torch.zeros((2, nodes_cnt, self.node_feat_dim), dtype=torch.float).to(self.device)
+        node_input = torch.zeros((2, nodes_cnt, 2)).to(self.device)                       
+        if comm_input is None:
+            comm_input = torch.zeros((2, nodes_cnt, 2), dtype=torch.float).to(self.device)
         else:
-            node_input = node_input.to(self.device).type(torch.float)
+            comm_input = comm_input.to(self.device)
         y_nodes_size = subgsum_param[0]['m']
-        y_node_input = torch.ones((2, y_nodes_size, self.node_feat_dim), dtype=torch.float).to(self.device)
+        y_node_input = torch.ones((2, y_nodes_size, 2)).to(self.device)
         adj = torch.tensor(np.array(adj),dtype=torch.float).to(self.device)
         v_adj = torch.tensor(np.array(v_adj),dtype=torch.float).to(self.device)
         node_embedding = []
         lay_num = 2
-        # If no external node_input provided, fall back to degree-only + zeros for community features.
-        if node_input.numel() == 0 or node_input.shape[2] != self.node_feat_dim:
-            node_input = torch.zeros((2, nodes_cnt, self.node_feat_dim), dtype=torch.float).to(self.device)
-            for l in range(lay_num):
-                for i in range(y_nodes_size):
-                    node_in_graph = torch.where(v_adj[l][i] == 1)
-                    if node_in_graph[0].numel() == 0:
-                        continue
-                    degree = torch.sum(adj[l][node_in_graph], axis=1, keepdims=True)
-                    degree_max, _ = torch.max(degree, dim=0)
-                    degree_new = degree / degree_max if degree_max > 0 else degree
-                    zeros = torch.zeros_like(degree_new)
-                    node_feature = torch.cat((degree_new, zeros, zeros), axis=1)
-                    node_input[l][node_in_graph] = node_feature
         for l in range(lay_num):
-            input_message = torch.matmul(node_input[l], self.w_n2l)
+            for i in range(y_nodes_size):
+                node_in_graph = torch.where(v_adj[l][i] == 1)
+                if node_in_graph[0].numel() == 0:
+                    continue
+                degree = torch.sum(adj[l][node_in_graph], axis=1, keepdims=True)
+                degree_max,_ = torch.max(degree,dim=0)
+                degree_new = degree/degree_max
+                node_feature = torch.cat((degree_new,degree_new),axis = 1)
+                node_input[l][node_in_graph] = node_feature
+        for l in range(lay_num):
+            input_message = torch.matmul(node_input[l], self.w_n2l) + self.comm_scale * torch.matmul(comm_input[l], self.w_comm)
             #[node_cnt, embed_dim]  # no sparse
             #input_potential_layer = tf.nn.relu(input_message)
             input_potential_layer = self.act(input_message)
@@ -183,14 +176,6 @@ class MultiDismantler_net(nn.Module):
                 y_cur_message_layer = self.act(torch.matmul(y_merged_linear, self.p_node_conv3))
                 y_cur_message_layer = torch.nn.functional.normalize(y_cur_message_layer, p=2, dim=1)
             node_output = torch.cat((cur_message_layer,y_cur_message_layer),axis = 0)
-            # Soft-partition gating with community role features.
-            # node_input: [deg_norm, P, z]; only apply to active nodes (first nodes_cnt).
-            if self.node_feat_dim >= 3 and nodes_cnt > 0:
-                comm_raw = node_input[l, :nodes_cnt, 1:3]
-                gate_nodes = self.comm_gate(comm_raw).squeeze(1)  # [nodes_cnt]
-                gate_all = torch.zeros(nodes_cnt + y_nodes_size, device=self.device, dtype=node_output.dtype)
-                gate_all[:nodes_cnt] = gate_nodes
-                node_output = node_output * (1.0 + gate_all.unsqueeze(1))
             #node_output = torch.nn.functional.normalize(node_output, p=2, dim=1)
             node_embedding.append(node_output)    
                     
@@ -263,34 +248,32 @@ class MultiDismantler_net(nn.Module):
         #q = torch.tensor(q).unsqueeze(1).to(self.device)
         return q, cur_message_layer
 
-    def test_forward(self, node_input, subgsum_param, n2nsum_param, rep_global, aux_input, adj, v_adj):
+    def test_forward(self, node_input, subgsum_param, n2nsum_param, rep_global, aux_input, comm_input=None, adj=None, v_adj=None):
         nodes_cnt = n2nsum_param[0]['m']
-        if node_input is None:
-            node_input = torch.zeros((2, nodes_cnt, self.node_feat_dim), dtype=torch.float).to(self.device)
+        node_input = torch.zeros((2, nodes_cnt, 2), dtype=torch.float).to(self.device)                            
+        if comm_input is None:
+            comm_input = torch.zeros((2, nodes_cnt, 2), dtype=torch.float).to(self.device)
         else:
-            node_input = node_input.to(self.device).type(torch.float)
+            comm_input = comm_input.to(self.device)
         y_nodes_size = subgsum_param[0]['m']
-        y_node_input = torch.ones((2, y_nodes_size, self.node_feat_dim), dtype=torch.float).to(self.device)
+        y_node_input = torch.ones((2, y_nodes_size, 2), dtype=torch.float).to(self.device)
         adj = torch.tensor(np.array(adj),dtype=torch.float).to(self.device)
         v_adj = torch.tensor(np.array(v_adj),dtype=torch.float).to(self.device)
         node_embedding = []
         lay_num = 2
-        if node_input.numel() == 0 or node_input.shape[2] != self.node_feat_dim:
-            node_input = torch.zeros((2, nodes_cnt, self.node_feat_dim), dtype=torch.float).to(self.device)
-            for l in range(lay_num):
-                for i in range(y_nodes_size):
-                    node_in_graph = torch.where(v_adj[l][i] == 1)
-                    if node_in_graph[0].numel() == 0:
-                        continue
-                    degree = torch.sum(adj[l][node_in_graph], axis=1, keepdims=True)
-                    degree_max, _ = torch.max(degree, dim=0)
-                    degree_new = degree / degree_max if degree_max > 0 else degree
-                    zeros = torch.zeros_like(degree_new)
-                    node_feature = torch.cat((degree_new, zeros, zeros), axis=1)
-                    node_input[l][node_in_graph] = node_feature
+        for l in range(lay_num):
+            for i in range(y_nodes_size):
+                node_in_graph = torch.where(v_adj[l][i] == 1)
+                if node_in_graph[0].numel() == 0:
+                    continue
+                degree = torch.sum(adj[l][node_in_graph], axis=1, keepdims=True)
+                degree_max,_ = torch.max(degree,dim=0)
+                degree_new = degree/degree_max
+                node_feature = torch.cat((degree_new,degree_new),axis = 1)
+                node_input[l][node_in_graph] = node_feature
 
         for l in range(lay_num):
-            input_message = torch.matmul(node_input[l], self.w_n2l)
+            input_message = torch.matmul(node_input[l], self.w_n2l) + self.comm_scale * torch.matmul(comm_input[l], self.w_comm)
             #[node_cnt, embed_dim]  # no sparse
             #input_potential_layer = tf.nn.relu(input_message)
             input_potential_layer = self.act(input_message)
@@ -350,12 +333,6 @@ class MultiDismantler_net(nn.Module):
                 y_cur_message_layer = torch.nn.functional.normalize(y_cur_message_layer, p=2, dim=1)
                 
             node_output = torch.cat((cur_message_layer,y_cur_message_layer),axis = 0)
-            if self.node_feat_dim >= 3 and nodes_cnt > 0:
-                comm_raw = node_input[l, :nodes_cnt, 1:3]
-                gate_nodes = self.comm_gate(comm_raw).squeeze(1)
-                gate_all = torch.zeros(nodes_cnt + y_nodes_size, device=self.device, dtype=node_output.dtype)
-                gate_all[:nodes_cnt] = gate_nodes
-                node_output = node_output * (1.0 + gate_all.unsqueeze(1))
             #node_output = torch.nn.functional.normalize(node_output, p=2, dim=1)
             node_embedding.append(node_output)    
                     

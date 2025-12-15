@@ -1,0 +1,150 @@
+===Train Start===
+(project-graph) PS F:\project\project-graph\code> .\run.ps1 CEMultiDismantler train
+CUDA: True
+Total number of MultiDismantler_net parameters: 31205
+100%|███████████████████████████████████████████████████████████████████████████████| 200/200 [00:01<00:00, 165.94it/s]
+
+generating new training graphs...
+100%|█████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:06<00:00, 157.30it/s]
+
+generating new training graphs...
+100%|█████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:06<00:00, 160.30it/s]
+model has been saved success!
+iter 0, eps 1.0000, average size of vc:0.217267
+testing 200 graphs time: 97.21s
+500 iterations total time: 103.48s
+
+model has been saved success!
+
+generating new training graphs...
+100%|█████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:06<00:00, 155.11it/s]
+iter 1000, eps 0.9050, average size of vc:0.298486
+testing 200 graphs time: 152.96s
+500 iterations total time: 572.23s
+
+model has been saved success!
+
+generating new training graphs...
+100%|█████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:06<00:00, 152.97it/s]
+model has been saved success!
+iter 2000, eps 0.8100, average size of vc:0.203141
+testing 200 graphs time: 95.19s
+500 iterations total time: 579.96s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:11<00:00, 87.11it/s]
+model has been saved success!
+iter 3000, eps 0.7150, average size of vc:0.124104
+testing 200 graphs time: 72.40s
+500 iterations total time: 594.42s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:11<00:00, 90.60it/s]
+model has been saved success!
+iter 4000, eps 0.6200, average size of vc:0.121564
+testing 200 graphs time: 70.44s
+500 iterations total time: 614.26s
+===Train End===
+===Train Start===
+CUDA: True
+Total number of MultiDismantler_net parameters: 31333
+100%|███████████████████████████████████████████████████████████████████████████████| 200/200 [00:01<00:00, 108.32it/s]
+
+generating new training graphs...
+100%|█████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:09<00:00, 104.53it/s]
+
+generating new training graphs...
+100%|█████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:09<00:00, 100.05it/s]
+model has been saved success!
+iter 0, eps 1.0000, average size of vc:0.124058
+testing 200 graphs time: 74.13s
+500 iterations total time: 84.16s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 99.99it/s]
+iter 1000, eps 0.9050, average size of vc:0.363978
+testing 200 graphs time: 196.17s
+500 iterations total time: 612.02s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 95.77it/s]
+iter 2000, eps 0.8100, average size of vc:0.353371
+testing 200 graphs time: 234.49s
+500 iterations total time: 731.09s
+
+model has been saved success!
+
+generating new training graphs...
+100%|█████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:09<00:00, 105.06it/s]
+iter 3000, eps 0.7150, average size of vc:0.339146
+testing 200 graphs time: 179.82s
+500 iterations total time: 741.52s
+
+model has been saved success!
+
+generating new training graphs...
+100%|█████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:09<00:00, 103.04it/s]
+iter 4000, eps 0.6200, average size of vc:0.325233
+testing 200 graphs time: 170.78s
+500 iterations total time: 773.71s
+===Train End===
+===Train Start===
+(project-graph) PS F:\project\project-graph\code> .\run.ps1 CEMultiDismantler train
+CUDA: True
+Total number of MultiDismantler_net parameters: 31333
+100%|████████████████████████████████████████████████████████████████████████████████| 200/200 [00:02<00:00, 92.81it/s]
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:16<00:00, 61.91it/s]
+
+generating new training graphs...
+100%|█████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:09<00:00, 102.35it/s]
+model has been saved success!
+iter 0, eps 1.0000, average size of vc:0.217270
+testing 200 graphs time: 96.01s
+500 iterations total time: 105.81s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:16<00:00, 60.73it/s]
+iter 1000, eps 0.9050, average size of vc:0.303873
+testing 200 graphs time: 152.57s
+500 iterations total time: 566.59s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 97.69it/s]
+model has been saved success!
+iter 2000, eps 0.8100, average size of vc:0.195821
+testing 200 graphs time: 88.17s
+500 iterations total time: 565.84s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 98.60it/s]
+model has been saved success!
+iter 3000, eps 0.7150, average size of vc:0.130502
+testing 200 graphs time: 68.28s
+500 iterations total time: 565.11s
+
+model has been saved success!
+
+generating new training graphs...
+100%|█████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:09<00:00, 101.91it/s]
+model has been saved success!
+iter 4000, eps 0.6200, average size of vc:0.120221
+testing 200 graphs time: 66.97s
+500 iterations total time: 588.58s
+
+model has been saved success!

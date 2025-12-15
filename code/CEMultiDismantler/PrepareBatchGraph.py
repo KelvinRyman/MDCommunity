@@ -31,12 +31,7 @@ class PrepareBatchGraph:
         self.adj= []
         self.virtual_adj = []
         self.remove_edge_list = []
-        # community-aware static features (optional)
-        self.community_features = []
-        self.community_partitions = []
-        # per-node feature vectors per layer, aligned with idx_map order
-        self.node_feat = [[], []]
-        self.node_input = None
+        self.comm_feat = None
         
     def get_status_info(self,g: Graph,covered: List[int], remove_edge: List[set]):
         c = set(covered)
@@ -84,10 +79,6 @@ class PrepareBatchGraph:
         self.rep_global = [SparseMatrix(),SparseMatrix()]
         self.idx_map_list = []
         self.avail_act_cnt = []
-        self.community_features = []
-        self.community_partitions = []
-        self.node_feat = [[], []]
-        self.node_input = None
 
         node_cnt = [0,0]
         for i, idx in enumerate(idxes):
@@ -116,11 +107,10 @@ class PrepareBatchGraph:
             self.idx_map_list.append(idx_map)
             self.avail_act_cnt.append(avail)
             self.remove_edge_list.append(remove_edge)
-            self.community_features.append({
-                "participation": getattr(g, "node_participation", None),
-                "zscore": getattr(g, "node_zscore", None),
-            })
-            self.community_partitions.append(getattr(g, "community_partition", {}))
+
+        total_node_cnt = node_cnt.copy()
+        assert total_node_cnt[0] == total_node_cnt[1]
+        self.comm_feat = np.zeros((2, total_node_cnt[0], 2), dtype=np.float32)
             
         for j in range(2):
             self.graph[j].resize(len(idxes), node_cnt[j])
@@ -139,33 +129,22 @@ class PrepareBatchGraph:
             g = g_list[idx]
             idx_map = self.idx_map_list[i]
             remove_edge = self.remove_edge_list[i]
-            comm_feat = self.community_features[i]
-            max_deg = []
-            for h in range(2):
-                if len(g.adj_list[h]) == 0:
-                    max_deg.append(1)
-                else:
-                    max_deg.append(max(len(item[1]) for item in g.adj_list[h]))
             t = [0,0]
             for j in range(g.num_nodes):
                 for h in range(2):
                     if idx_map[h][j] < 0:
                         continue
                     idx_map[h][j] = t[h]
-                    self.graph[h].add_node(i, node_cnt[h] + t[h])
+                    new_idx = node_cnt[h] + t[h]
+                    self.graph[h].add_node(i, new_idx)
                     if not actions:
                         self.rep_global[h].rowIndex.append(node_cnt[h] + t[h])
                         self.rep_global[h].colIndex.append(i)
                         self.rep_global[h].value.append(1.0)
-                    part = 0.0
-                    zval = 0.0
-                    if comm_feat["participation"] is not None and len(comm_feat["participation"]) > j:
-                        part = float(comm_feat["participation"][j])
-                    if comm_feat["zscore"] is not None and len(comm_feat["zscore"]) > j:
-                        zval = float(comm_feat["zscore"][j])
-                    deg = len(g.adj_list[h][j][1]) if len(g.adj_list[h]) > j else 0
-                    deg_norm = deg / max_deg[h] if max_deg[h] > 0 else 0.0
-                    self.node_feat[h].append([deg_norm, part, zval])
+                    if hasattr(g, "community_feat") and len(g.community_feat) > h:
+                        feat = g.community_feat[h]
+                        if isinstance(feat, np.ndarray) and feat.shape[0] > j:
+                            self.comm_feat[h, new_idx, :] = feat[j]
                     t[h] += 1
             #error
             assert t[0] == self.avail_act_cnt[i][0]
@@ -191,11 +170,6 @@ class PrepareBatchGraph:
                         edge_cnt[j] += 1
 
                 node_cnt[j] += self.avail_act_cnt[i][j]
-
-        if node_cnt[0] > 0:
-            layer0 = torch.tensor(self.node_feat[0], dtype=torch.float32)
-            layer1 = torch.tensor(self.node_feat[1], dtype=torch.float32)
-            self.node_input = torch.stack([layer0, layer1], dim=0)
         #error
         assert node_cnt[0] == self.graph[0].num_nodes
         result_list = self.n2n_construct(self.aggregatorID)

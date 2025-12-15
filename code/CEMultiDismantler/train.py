@@ -10,7 +10,7 @@ os.chdir(sys.path[0])
 
 def main():
     dqn = MultiDismantler()
-    dqn.Train(skip_saved_iter=False)
+    dqn.Train()
 
 
 if __name__=="__main__":

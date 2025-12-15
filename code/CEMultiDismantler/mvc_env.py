@@ -1,14 +1,21 @@
 # mvc_env.py
-from typing import List, Set
+from typing import List, Set, Optional
 import random
 from disjoint_set import DisjointSet
 from graph import Graph
 import networkx as nx
 import Mcc
+import os
 class MvcEnv:
-    def __init__(self, norm):
+    def __init__(self, norm, *, cost_type: str = "unit", lambda_cascade: Optional[float] = None):
         # Constructor method of the MvcEnv class that initializes the instance variables
         self.norm = norm  
+        self.cost_type = (cost_type or "unit").strip().lower()
+        if lambda_cascade is None:
+            lambda_cascade = float(os.getenv("CE_LAMBDA_CASCADE", "0.1"))
+        self.lambda_cascade = float(lambda_cascade)
+        self._assert_reward_config()
+
         self.graph = Graph(0)
         self.numCoveredEdges = [0,0]  # of edges covered
         self.CcNum = 1.0  # connected component
@@ -28,9 +35,27 @@ class MvcEnv:
         self.flag = 0
         self.G1 = None
         self.G2 = None
-        # Cascade-Yield reward settings (Unit-cost style)
-        self.cascade_lambda = 0.1
-        self.prev_rank = None
+        self.last_rank = 0
+        self.last_cascade_size = 0
+        self.cascade_seq = []
+
+    def _assert_reward_config(self):
+        if self.cost_type != "unit":
+            raise ValueError(
+                f"CEMultiDismantler is unit-cost only; got cost_type={self.cost_type!r}. "
+                "Use `MultiDismantler_degree_cost` (or a dedicated CE degree-cost variant) instead."
+            )
+        if not (0.0 <= self.lambda_cascade <= 0.3):
+            raise AssertionError("Unit-cost mode requires 0 <= lambda_cascade <= 0.3.")
+
+    def _advance_lmcc_and_cascade(self, a: int):
+        prev_rank = int(self.last_rank)
+        rank = int(self.getMaxConnectedNodesNum(a))
+        cascade_size = max(0, prev_rank - rank - 1)
+        self.last_rank = rank
+        self.last_cascade_size = cascade_size
+        self.cascade_seq.append(cascade_size)
+        return rank, cascade_size
     def s0(self, _g: Graph):
         # reset the state of the environment
         self.graph = _g  
@@ -52,12 +77,9 @@ class MvcEnv:
         self.flag = 0
         self.G1 = None
         self.G2 = None
-        # initialize LMCC size for cascade-yield reward
-        self.prev_rank = self.getMaxConnectedNodesNum()
-        if self.graph.max_rank > 0:
-            self.MaxCCList = [float(self.prev_rank) / float(self.graph.max_rank)]
-        else:
-            self.MaxCCList = [1.0]
+        self.last_rank = int(self.getMaxConnectedNodesNum())
+        self.last_cascade_size = 0
+        self.cascade_seq.clear()
     def step(self, a):
        
         assert self.graph
@@ -74,7 +96,7 @@ class MvcEnv:
                     if neigh not in self.covered_set and (neigh,a) not in self.remove_edge[i]:
                         self.numCoveredEdges[i] += 1 
                     
-        r_t = self.getReward(a)  
+        r_t = self.getReward(a)
         self.reward_seq.append(r_t)  
         self.sum_rewards.append(r_t)                 
         return r_t
@@ -90,13 +112,9 @@ class MvcEnv:
             for neigh in list(self.graph.adj_list[i][a][1]):            
                     if neigh not in self.covered_set and (neigh,a) not in self.remove_edge[i]:
                         self.numCoveredEdges[i] += 1      
-        r_t = self.getReward(a)
-        # Keep evaluation score as AUDC-like LMCC integral, independent of reward semantics.
-        if self.prev_rank is not None and self.graph.max_rank > 0 and self.graph.num_nodes > 0:
-            self.score += (float(self.prev_rank) / float(self.graph.max_rank)) / float(self.graph.num_nodes)
-            self.MaxCCList.append(float(self.prev_rank) / float(self.graph.max_rank))
-        else:
-            self.MaxCCList.append(0.0)
+        r_t = self.getObjectiveReward(a)
+        self.score += -1 * r_t
+        self.MaxCCList.append(float(self.last_rank) / float(self.graph.max_rank))
     
     def randomAction(self):
        
@@ -143,29 +161,19 @@ class MvcEnv:
         return self.graph.num_edges[0] == (self.numCoveredEdges[0] + len(self.remove_edge[0])/2) or self.graph.num_edges[1] == (self.numCoveredEdges[1] + len(self.remove_edge[1])/2)
         
     def getReward(self,a):
-        """
-        Cascade-Yield Reward (enabled for CE / unit-cost style):
-          R_total = ΔLMCC + λ * (N_cascade / N)
-        where ΔLMCC is the normalized drop of LMCC after action a,
-        and N_cascade approximates extra failed nodes beyond the removed one.
-
-        Note: This changes reward sign/scale vs original unit-cost reward.
-        """
-        orig_node_num = float(self.graph.num_nodes) if self.graph.num_nodes > 0 else 1.0
-        prev_rank = float(self.prev_rank) if self.prev_rank is not None else float(self.getMaxConnectedNodesNum())
-        new_rank = float(self.getMaxConnectedNodesNum(a))
-
-        # Approximate cascade failures excluding the directly removed node.
-        drop = max(0.0, prev_rank - new_rank)
-        cascade_nodes = max(0.0, drop - 1.0)
-
-        delta_lmcc = drop / float(self.graph.max_rank) if self.graph.max_rank > 0 else 0.0
-        cascade_term = self.cascade_lambda * (cascade_nodes / orig_node_num)
-        r_total = delta_lmcc + cascade_term
-
-        self.prev_rank = new_rank
-        return float(r_total)
+        
+        orig_node_num = float(self.graph.num_nodes)
+        rank, cascade_size = self._advance_lmcc_and_cascade(a)
+        base_reward = -float(rank) / (self.graph.max_rank * orig_node_num)
+        cascade_mask = 1.0 if self.cost_type == "unit" else 0.0
+        bonus = cascade_mask * self.lambda_cascade * (float(cascade_size) / orig_node_num)
+        return base_reward + bonus
         #return -float(self.getRemainingCNDScore()) / (orig_node_num * orig_node_num * (orig_node_num - 1) / 2)
+
+    def getObjectiveReward(self, a):
+        orig_node_num = float(self.graph.num_nodes)
+        rank, _ = self._advance_lmcc_and_cascade(a)
+        return -float(rank) / (self.graph.max_rank * orig_node_num)
 
     def getMaxConnectedNodesNum(self,a=None):
         

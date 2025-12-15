@@ -33,8 +33,8 @@ from MRGNN.aggregators import MeanAggregator, LSTMAggregator, PoolAggregator
 GAMMA = 1  # decay rate of past observations
 UPDATE_TIME = 1000
 EMBEDDING_SIZE = 64
-MAX_ITERATION = 30000
-SAVE_FREQUENCY = 3000
+MAX_ITERATION = 31000
+SAVE_FREQUENCY = 1000
 LEARNING_RATE = 0.0001   #
 MEMORY_SIZE = 100000
 Alpha = 0.001 ## weight of reconstruction loss
@@ -82,8 +82,8 @@ class MultiDismantler:
         else:
             self.loss = nn.MSELoss()
 
-        self.IsDoubleDQN = True
-        self.IsPrioritizedSampling = True
+        self.IsDoubleDQN = False
+        self.IsPrioritizedSampling = False
         self.IsMultiStepDQN = True     ##(if IsNStepDQN=False, N_STEP==1)
 
         ############----------------------------- variants of DQN(end) ------------------- ###################################
@@ -123,6 +123,24 @@ class MultiDismantler:
         pytorch_total_params = sum(p.numel() for p in self.MultiDismantler_net.parameters())
         print("Total number of MultiDismantler_net parameters: {}".format(pytorch_total_params))
         self.flag = 1
+
+        # Smoke-test configuration (keeps full pipeline, shrinks sizes)
+        smoke_val = os.getenv("SMOKE_TEST", "0").strip().lower()
+        self._smoke_fast = smoke_val in ("1", "true", "yes")
+        if self._smoke_fast:
+            self._smoke_train_count = int(os.getenv("SMOKE_TRAIN", "16"))
+            self._smoke_valid_count = int(os.getenv("SMOKE_VALID", "4"))
+            self._smoke_iter = int(os.getenv("SMOKE_ITER", "50"))
+            self._smoke_batch = int(os.getenv("SMOKE_BATCH", "8"))
+            self._smoke_warmup_games = int(os.getenv("SMOKE_WARMUP_GAMES", "2"))
+            self._smoke_warmup_traj = int(os.getenv("SMOKE_WARMUP_TRAJ", "20"))
+        else:
+            self._smoke_train_count = n_train
+            self._smoke_valid_count = n_valid
+            self._smoke_iter = MAX_ITERATION
+            self._smoke_batch = BATCH_SIZE
+            self._smoke_warmup_games = 10
+            self._smoke_warmup_traj = 100
     def gen_graph(self,num_min,num_max):
         max_n = num_max
         min_n = num_min
@@ -135,7 +153,7 @@ class MultiDismantler:
         sys.stdout.flush()
         self.ClearTrainGraphs()
         #1000
-        for i in tqdm(range(n_train)):
+        for i in tqdm(range(self._smoke_train_count)):
             g = self.gen_graph(num_min, num_max)
             if g.max_rank == 1: #if generated graph's original Mcc = 1, then remove it. 
                 continue
@@ -159,7 +177,7 @@ class MultiDismantler:
             self.ngraph_train += 1
             self.TrainSet.InsertGraph(t, g)
     def PrepareValidData(self):
-        for i in tqdm(range(n_valid)):
+        for i in tqdm(range(self._smoke_valid_count)):
             g = self.gen_graph(NUM_MIN, NUM_MAX)
             self.InsertGraph(g, is_test=True)
     def Run_simulator(self, num_seq, eps, TrainSet, n_step):
@@ -295,9 +313,9 @@ class MultiDismantler:
         self.MultiDismantler_net_T.load_state_dict(self.MultiDismantler_net.state_dict())
 
     def Fit(self):
-        sample = self.nStepReplayMem.sampling(BATCH_SIZE)
+        sample = self.nStepReplayMem.sampling(self._smoke_batch)
         ness = False
-        for i in range(BATCH_SIZE):
+        for i in range(self._smoke_batch):
             if (not sample.list_term[i]):
                 ness = True
                 break
@@ -309,9 +327,9 @@ class MultiDismantler:
             else:
                 list_pred = self.PredictWithSnapshot(sample.g_list, sample.list_s_primes, sample.list_s_primes_edges)
 
-        list_target = np.zeros([BATCH_SIZE, 1])
+        list_target = np.zeros([self._smoke_batch, 1])
 
-        for i in range(BATCH_SIZE):
+        for i in range(self._smoke_batch):
             q_rhs = 0
             if (not sample.list_term[i]):
                 if self.IsDoubleDQN:
@@ -323,8 +341,7 @@ class MultiDismantler:
             # list_target.append(q_rhs)
         if self.IsPrioritizedSampling:
             return self.fit_with_prioritized(sample.b_idx,sample.ISWeights,sample.g_list, sample.list_st, sample.list_at,list_target)
-        else:
-            return self.fit(sample.g_list, sample.list_st, sample.list_at,list_target, sample.list_st_edges)
+        return self.fit(sample.g_list, sample.list_st, sample.list_at,list_target, sample.list_st_edges)
 
     def fit_with_prioritized(self,tree_idx,ISWeights,g_list,covered,actions,list_target):
         '''
@@ -416,8 +433,8 @@ class MultiDismantler:
     def Train(self, skip_saved_iter=False):
         self.PrepareValidData()   
         self.gen_new_graphs(NUM_MIN, NUM_MAX)   
-        for i in range(10):
-            self.PlayGame(100, 1)
+        for i in range(self._smoke_warmup_games):
+            self.PlayGame(self._smoke_warmup_traj, 1)
         self.TakeSnapShot()
         eps_start = 1.0
         eps_end = 0.05
@@ -429,6 +446,7 @@ class MultiDismantler:
             os.mkdir(save_dir)
         VCFile = '%s/ModelVC_%d_%d.csv'%(save_dir, NUM_MIN, NUM_MAX)
         start_iter=0
+        f_out = None
         if(skip_saved_iter):
             if(os.path.isfile(VCFile)):
                 f_read = open(VCFile)
@@ -453,51 +471,60 @@ class MultiDismantler:
                     print(f'skipping iterations that are already done, starting at iter {start_iter}..')                    
                     # append instead of new write
                     f_out = open(VCFile, 'a')
+            else:
+                # No VC file yet: start fresh and create it.
+                start_iter = 0
+                f_out = open(VCFile, 'w')
         else:
             f_out = open(VCFile, 'w')
         
         best_frac = inf
-        for iter in range(start_iter, MAX_ITERATION):
-            start = time.perf_counter()
-            ###########-----------------------normal training data setup(start) -----------------##############################
-            if( (iter and iter % SAVE_FREQUENCY == 0) or (iter==start_iter)):
-                self.gen_new_graphs(NUM_MIN, NUM_MAX)
-            eps = eps_end + max(0., (eps_start - eps_end) * (eps_step - iter) / eps_step)
-            if iter % 10 == 0:
-                self.PlayGame(10, eps)
-            if iter % SAVE_FREQUENCY == 0:
-                if(iter == 0 or iter == start_iter):
-                    N_start = start
-                else:
-                    N_start = N_end
-                frac = 0.0
-                test_start = time.time()
-                for idx in range(n_valid):
-                    frac += self.Test(idx)
-                if frac < best_frac :
-                    best_frac = frac
-                    self.SaveModel('%s/best_model.ckpt' % (save_dir))
-                test_end = time.time()
-                f_out.write('%.16f\n'%(frac/n_valid))   #write vc into the file
-                f_out.flush()
-                print('iter %d, eps %.4f, average size of vc:%.6f'%(iter, eps, frac/n_valid))
-                print ('testing 200 graphs time: %.2fs'%(test_end-test_start))
-                N_end = time.perf_counter()
-                print ('500 iterations total time: %.2fs\n'%(N_end-N_start))
-                sys.stdout.flush()
-                model_path = '%s/nrange_%d_%d_iter_%d.ckpt' % (save_dir, NUM_MIN, NUM_MAX, iter)
-                if(skip_saved_iter and iter==start_iter):
-                    pass
-                else:
-                    if iter % SAVE_FREQUENCY == 0:
-                        self.SaveModel(model_path)
-            if( (iter % UPDATE_TIME == 0) or (iter==start_iter)):
-                self.TakeSnapShot()
-            self.Fit()
-            # for name, param in self.MultiDismantler_net.named_parameters():
-            #     print("Parameter:", name)
-            #     print("Gradient:", param.grad)
-        f_out.close()
+        max_iter_local = start_iter + self._smoke_iter if self._smoke_fast else self._smoke_iter
+        try:
+            for iter in range(start_iter, max_iter_local):
+                start = time.perf_counter()
+                ###########-----------------------normal training data setup(start) -----------------##############################
+                if( (iter and iter % SAVE_FREQUENCY == 0) or (iter==start_iter)):
+                    self.gen_new_graphs(NUM_MIN, NUM_MAX)
+                eps = eps_end + max(0., (eps_start - eps_end) * (eps_step - iter) / eps_step)
+                if iter % 10 == 0:
+                    self.PlayGame(10, eps)
+                if iter % SAVE_FREQUENCY == 0:
+                    if(iter == 0 or iter == start_iter):
+                        N_start = start
+                    else:
+                        N_start = N_end
+                    frac = 0.0
+                    test_start = time.time()
+                    for idx in range(self._smoke_valid_count):
+                        frac += self.Test(idx)
+                    if frac < best_frac :
+                        best_frac = frac
+                        self.SaveModel('%s/best_model.ckpt' % (save_dir))
+                    test_end = time.time()
+                    denom = max(1, self._smoke_valid_count)
+                    f_out.write('%.16f\n'%(frac/denom))   #write vc into the file
+                    f_out.flush()
+                    print('iter %d, eps %.4f, average size of vc:%.6f'%(iter, eps, frac/denom))
+                    print ('testing %d graphs time: %.2fs'%(denom, test_end-test_start))
+                    N_end = time.perf_counter()
+                    print ('500 iterations total time: %.2fs\n'%(N_end-N_start))
+                    sys.stdout.flush()
+                    model_path = '%s/nrange_%d_%d_iter_%d.ckpt' % (save_dir, NUM_MIN, NUM_MAX, iter)
+                    if(skip_saved_iter and iter==start_iter):
+                        pass
+                    else:
+                        if iter % SAVE_FREQUENCY == 0:
+                            self.SaveModel(model_path)
+                if( (iter % UPDATE_TIME == 0) or (iter==start_iter)):
+                    self.TakeSnapShot()
+                self.Fit()
+                # for name, param in self.MultiDismantler_net.named_parameters():
+                #     print("Parameter:", name)
+                #     print("Gradient:", param.grad)
+        finally:
+            if f_out is not None:
+                f_out.close()
 
 
 
@@ -519,7 +546,7 @@ class MultiDismantler:
         print ('The best model is :%s'%(model_file))
         sys.stdout.flush()
         self.LoadModel(model_file)
-        n_test = 20
+        n_test = 2 if self._smoke_fast else 20
         result_list_score = []
         result_list_time = []
         cost_value_list = []

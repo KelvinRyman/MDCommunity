@@ -33,8 +33,8 @@ from MRGNN.aggregators import MeanAggregator, LSTMAggregator, PoolAggregator
 GAMMA = 1  # decay rate of past observations
 UPDATE_TIME = 1000
 EMBEDDING_SIZE = 64
-MAX_ITERATION = 30000
-SAVE_FREQUENCY = 3000
+MAX_ITERATION = 31000
+SAVE_FREQUENCY = 1000
 LEARNING_RATE = 0.0001   #
 MEMORY_SIZE = 100000
 Alpha = 0.001 ## weight of reconstruction loss
@@ -111,9 +111,8 @@ class MultiDismantler:
         
         layerNodeAttention_weight1 = BitwiseMultipyLogis(EMBEDDING_SIZE, dropout=0.5, alpha=0.5,
                                                         metapath_number=2, device = self.device)
-        # node features: [deg_norm, participation, zscore]
-        self.MultiDismantler_net = MultiDismantler_net(layerNodeAttention_weight1, device=self.device, node_feat_dim=3)
-        self.MultiDismantler_net_T = MultiDismantler_net(layerNodeAttention_weight1, device=self.device, node_feat_dim=3)
+        self.MultiDismantler_net = MultiDismantler_net(layerNodeAttention_weight1, device=self.device)
+        self.MultiDismantler_net_T = MultiDismantler_net(layerNodeAttention_weight1, device=self.device)
         self.MultiDismantler_net.to(self.device)
         self.MultiDismantler_net_T.to(self.device)
 
@@ -126,7 +125,8 @@ class MultiDismantler:
         self.flag = 1
 
         # Smoke-test configuration (keeps full pipeline, shrinks sizes)
-        self._smoke_fast = os.getenv("SMOKE_TEST", "0") == "1"
+        smoke_val = os.getenv("SMOKE_TEST", "0").strip().lower()
+        self._smoke_fast = smoke_val in ("1", "true", "yes")
         if self._smoke_fast:
             self._smoke_train_count = int(os.getenv("SMOKE_TRAIN", "16"))
             self._smoke_valid_count = int(os.getenv("SMOKE_VALID", "4"))
@@ -228,8 +228,9 @@ class MultiDismantler:
         self.inputs['n2nsum_param'] = self.SetupSparseT(PrepareBatchGraph1.n2nsum_param)
         self.inputs['laplacian_param'] = self.SetupSparseT(PrepareBatchGraph1.laplacian_param)
         self.inputs['subgsum_param'] = self.SetupSparseT(PrepareBatchGraph1.subgsum_param)
-        self.inputs['node_input'] = PrepareBatchGraph1.node_input
+        self.inputs['node_input'] = None
         self.inputs['aux_input'] = Variable(torch.tensor(PrepareBatchGraph1.aux_feat).type(torch.FloatTensor)).to(self.device)
+        self.inputs['comm_feat'] = Variable(torch.tensor(PrepareBatchGraph1.comm_feat).type(torch.FloatTensor)).to(self.device)
         self.inputs['adj'] = PrepareBatchGraph1.adj
         self.inputs['v_adj'] = PrepareBatchGraph1.virtual_adj
 
@@ -254,8 +255,9 @@ class MultiDismantler:
 
         self.inputs['subgsum_param'] = self.SetupSparseT(PrepareBatchGraph1.subgsum_param)
 
-        self.inputs['node_input'] = PrepareBatchGraph1.node_input
+        self.inputs['node_input'] = None
         self.inputs['aux_input'] = Variable(torch.tensor(PrepareBatchGraph1.aux_feat).type(torch.FloatTensor)).to(self.device)
+        self.inputs['comm_feat'] = Variable(torch.tensor(PrepareBatchGraph1.comm_feat).type(torch.FloatTensor)).to(self.device)
         self.inputs['adj'] = PrepareBatchGraph1.adj
         self.inputs['v_adj'] = PrepareBatchGraph1.virtual_adj
         return PrepareBatchGraph1.idx_map_list
@@ -273,11 +275,11 @@ class MultiDismantler:
             idx_map_list = self.SetuppredAll(batch_idxes, g_list, covered, remove_edges)
             #Node input is NONE for not costed scnario
             if isSnapSnot:
-                result = self.MultiDismantler_net_T.test_forward(node_input=self.inputs['node_input'],\
+                result = self.MultiDismantler_net_T.test_forward(node_input=self.inputs['node_input'], comm_input=self.inputs['comm_feat'],\
                     subgsum_param=self.inputs['subgsum_param'], n2nsum_param=self.inputs['n2nsum_param'],\
                     rep_global=self.inputs['rep_global'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'])
             else:
-                result = self.MultiDismantler_net.test_forward(node_input=self.inputs['node_input'],\
+                result = self.MultiDismantler_net.test_forward(node_input=self.inputs['node_input'], comm_input=self.inputs['comm_feat'],\
                     subgsum_param=self.inputs['subgsum_param'], n2nsum_param=self.inputs['n2nsum_param'],\
                     rep_global=self.inputs['rep_global'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'])
             # TOFIX: line below used to be raw_output = result[0]. This is weird because results is supposed to be 
@@ -397,7 +399,7 @@ class MultiDismantler:
             #Node inpute is NONE for not costed scnario
             q_pred, cur_message_layer = self.MultiDismantler_net.train_forward(node_input=self.inputs['node_input'],\
                 subgsum_param=self.inputs['subgsum_param'], n2nsum_param=self.inputs['n2nsum_param'],\
-                action_select=self.inputs['action_select'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'])
+                action_select=self.inputs['action_select'], aux_input=self.inputs['aux_input'], comm_input=self.inputs['comm_feat'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'])
 
             loss = self.calc_loss(q_pred, cur_message_layer)
             loss.backward()
@@ -446,6 +448,7 @@ class MultiDismantler:
             os.mkdir(save_dir)
         VCFile = '%s/ModelVC_%d_%d.csv'%(save_dir, NUM_MIN, NUM_MAX)
         start_iter=0
+        f_out = None
         if(skip_saved_iter):
             if(os.path.isfile(VCFile)):
                 f_read = open(VCFile)
@@ -470,53 +473,60 @@ class MultiDismantler:
                     print(f'skipping iterations that are already done, starting at iter {start_iter}..')                    
                     # append instead of new write
                     f_out = open(VCFile, 'a')
+            else:
+                # No VC file yet: start fresh and create it.
+                start_iter = 0
+                f_out = open(VCFile, 'w')
         else:
             f_out = open(VCFile, 'w')
         
         best_frac = inf
         max_iter_local = start_iter + self._smoke_iter if self._smoke_fast else self._smoke_iter
-        for iter in range(start_iter, max_iter_local):
-            start = time.perf_counter()
-            ###########-----------------------normal training data setup(start) -----------------##############################
-            if( (iter and iter % SAVE_FREQUENCY == 0) or (iter==start_iter)):
-                self.gen_new_graphs(NUM_MIN, NUM_MAX)
-            eps = eps_end + max(0., (eps_start - eps_end) * (eps_step - iter) / eps_step)
-            if iter % 10 == 0:
-                self.PlayGame(10, eps)
-            if iter % SAVE_FREQUENCY == 0:
-                if(iter == 0 or iter == start_iter):
-                    N_start = start
-                else:
-                    N_start = N_end
-                frac = 0.0
-                test_start = time.time()
-                for idx in range(self._smoke_valid_count):
-                    frac += self.Test(idx)
-                if frac < best_frac :
-                    best_frac = frac
-                    self.SaveModel('%s/best_model.ckpt' % (save_dir))
-                test_end = time.time()
-                denom = max(1, self._smoke_valid_count)
-                f_out.write('%.16f\n'%(frac/denom))   #write vc into the file
-                f_out.flush()
-                print('iter %d, eps %.4f, average size of vc:%.6f'%(iter, eps, frac/denom))
-                print ('testing %d graphs time: %.2fs'%(denom, test_end-test_start))
-                N_end = time.perf_counter()
-                print ('500 iterations total time: %.2fs\n'%(N_end-N_start))
-                sys.stdout.flush()
-                model_path = '%s/nrange_%d_%d_iter_%d.ckpt' % (save_dir, NUM_MIN, NUM_MAX, iter)
-                if(skip_saved_iter and iter==start_iter):
-                    pass
-                else:
-                    if iter % SAVE_FREQUENCY == 0:
-                        self.SaveModel(model_path)
-            if( (iter % UPDATE_TIME == 0) or (iter==start_iter)):
-                self.TakeSnapShot()
-            self.Fit()
-            # for name, param in self.MultiDismantler_net.named_parameters():
-            #     print("Parameter:", name)
-            #     print("Gradient:", param.grad)
-        f_out.close()
+        try:
+            for iter in range(start_iter, max_iter_local):
+                start = time.perf_counter()
+                ###########-----------------------normal training data setup(start) -----------------##############################
+                if( (iter and iter % SAVE_FREQUENCY == 0) or (iter==start_iter)):
+                    self.gen_new_graphs(NUM_MIN, NUM_MAX)
+                eps = eps_end + max(0., (eps_start - eps_end) * (eps_step - iter) / eps_step)
+                if iter % 10 == 0:
+                    self.PlayGame(10, eps)
+                if iter % SAVE_FREQUENCY == 0:
+                    if(iter == 0 or iter == start_iter):
+                        N_start = start
+                    else:
+                        N_start = N_end
+                    frac = 0.0
+                    test_start = time.time()
+                    for idx in range(self._smoke_valid_count):
+                        frac += self.Test(idx)
+                    if frac < best_frac :
+                        best_frac = frac
+                        self.SaveModel('%s/best_model.ckpt' % (save_dir))
+                    test_end = time.time()
+                    denom = max(1, self._smoke_valid_count)
+                    f_out.write('%.16f\n'%(frac/denom))   #write vc into the file
+                    f_out.flush()
+                    print('iter %d, eps %.4f, average size of vc:%.6f'%(iter, eps, frac/denom))
+                    print ('testing %d graphs time: %.2fs'%(denom, test_end-test_start))
+                    N_end = time.perf_counter()
+                    print ('500 iterations total time: %.2fs\n'%(N_end-N_start))
+                    sys.stdout.flush()
+                    model_path = '%s/nrange_%d_%d_iter_%d.ckpt' % (save_dir, NUM_MIN, NUM_MAX, iter)
+                    if(skip_saved_iter and iter==start_iter):
+                        pass
+                    else:
+                        if iter % SAVE_FREQUENCY == 0:
+                            self.SaveModel(model_path)
+                if( (iter % UPDATE_TIME == 0) or (iter==start_iter)):
+                    self.TakeSnapShot()
+                self.Fit()
+                # for name, param in self.MultiDismantler_net.named_parameters():
+                #     print("Parameter:", name)
+                #     print("Gradient:", param.grad)
+        finally:
+            if f_out is not None:
+                f_out.close()
 
 
 
