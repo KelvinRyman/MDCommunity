@@ -38,6 +38,7 @@ class MvcEnv:
         self.last_rank = 0
         self.last_cascade_size = 0
         self.cascade_seq = []
+        self.alpha_seq = []
 
     def _assert_reward_config(self):
         if self.cost_type != "unit":
@@ -56,6 +57,15 @@ class MvcEnv:
         self.last_cascade_size = cascade_size
         self.cascade_seq.append(cascade_size)
         return rank, cascade_size
+
+    def getAlpha(self) -> float:
+        if not self.graph or self.graph.max_rank == 0:
+            return 1.0
+        ratio = float(self.last_rank) / float(self.graph.max_rank)
+        if ratio > 0.7:
+            return 1.0
+        return max(0.5, ratio * ratio)
+
     def s0(self, _g: Graph):
         # reset the state of the environment
         self.graph = _g  
@@ -80,11 +90,13 @@ class MvcEnv:
         self.last_rank = int(self.getMaxConnectedNodesNum())
         self.last_cascade_size = 0
         self.cascade_seq.clear()
+        self.alpha_seq.clear()
     def step(self, a):
        
         assert self.graph
         assert a not in self.covered_set
 
+        self.alpha_seq.append(self.getAlpha())
         self.state_seq.append(self.action_list.copy()) 
         remove_edge = [self.remove_edge[0].copy(),self.remove_edge[1].copy()]
         self.state_seq_edges.append(remove_edge)

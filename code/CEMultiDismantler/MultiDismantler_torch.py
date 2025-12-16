@@ -38,6 +38,7 @@ SAVE_FREQUENCY = 1000
 LEARNING_RATE = 0.0001   #
 MEMORY_SIZE = 100000
 Alpha = 0.001 ## weight of reconstruction loss
+CE_COMM_SCALE = 0.3
 ########################### hyperparameters for priority(start)#########################################
 epsilon = 0.0000001  # small amount to avoid zero priority
 alpha = 0.6  # [0~1] convert the importance of TD error to priority
@@ -55,7 +56,7 @@ BATCH_SIZE = 64
 initialization_stddev = 0.01 
 n_valid = 200 
 n_train = 1000 
-aux_dim = 4
+aux_dim = 5
 num_env = 1
 inf = 2147483647/2
 #########################  embedding method ##########################################################
@@ -111,8 +112,8 @@ class MultiDismantler:
         
         layerNodeAttention_weight1 = BitwiseMultipyLogis(EMBEDDING_SIZE, dropout=0.5, alpha=0.5,
                                                         metapath_number=2, device = self.device)
-        self.MultiDismantler_net = MultiDismantler_net(layerNodeAttention_weight1, device=self.device)
-        self.MultiDismantler_net_T = MultiDismantler_net(layerNodeAttention_weight1, device=self.device)
+        self.MultiDismantler_net = MultiDismantler_net(layerNodeAttention_weight1, device=self.device, comm_scale=CE_COMM_SCALE, aux_dim=aux_dim)
+        self.MultiDismantler_net_T = MultiDismantler_net(layerNodeAttention_weight1, device=self.device, comm_scale=CE_COMM_SCALE, aux_dim=aux_dim)
         self.MultiDismantler_net.to(self.device)
         self.MultiDismantler_net_T.to(self.device)
 
@@ -122,6 +123,7 @@ class MultiDismantler:
 
         pytorch_total_params = sum(p.numel() for p in self.MultiDismantler_net.parameters())
         print("Total number of MultiDismantler_net parameters: {}".format(pytorch_total_params))
+        print(f"CE_COMM_SCALE: {CE_COMM_SCALE}")
         self.flag = 1
 
         # Smoke-test configuration (keeps full pipeline, shrinks sizes)
@@ -141,6 +143,69 @@ class MultiDismantler:
             self._smoke_batch = BATCH_SIZE
             self._smoke_warmup_games = 10
             self._smoke_warmup_traj = 100
+
+    def _ce_community_count_stats(self, graphs):
+        if not graphs:
+            return {"layer0": (0.0, 0.0), "layer1": (0.0, 0.0)}
+        counts0 = []
+        counts1 = []
+        for g in graphs:
+            part = getattr(g, "community_partition", None)
+            if not part or len(part) < 2:
+                continue
+            vals0 = list(part[0].values())
+            vals1 = list(part[1].values())
+            counts0.append(len(set(vals0)) if vals0 else 0)
+            counts1.append(len(set(vals1)) if vals1 else 0)
+        if not counts0:
+            counts0 = [0]
+        if not counts1:
+            counts1 = [0]
+        c0 = np.asarray(counts0, dtype=np.float32)
+        c1 = np.asarray(counts1, dtype=np.float32)
+        return {"layer0": (float(c0.mean()), float(c0.var())), "layer1": (float(c1.mean()), float(c1.var()))}
+
+    def _ce_debug_graph_magnitudes(self, graphs, sample_k: int = 8):
+        if not graphs:
+            return 0.0, 0.0, 0.0
+
+        k = min(sample_k, len(graphs))
+        topo_norms = []
+        comm_norms = []
+        with torch.no_grad():
+            w_topo = self.MultiDismantler_net.w_n2l
+            w_comm = self.MultiDismantler_net.w_comm
+            comm_scale = float(self.MultiDismantler_net.comm_scale)
+            for g in graphs[:k]:
+                n = int(getattr(g, "num_nodes", 0))
+                if n <= 0:
+                    continue
+                comm_feat = getattr(g, "community_feat", None)
+                for layer in range(2):
+                    deg = np.zeros(n, dtype=np.float32)
+                    for node, neigh in g.adj_list[layer]:
+                        deg[int(node)] = float(len(neigh))
+                    max_deg = float(deg.max()) if deg.size else 0.0
+                    deg_new = deg / max_deg if max_deg > 0 else deg
+                    node_input = torch.tensor(np.stack([deg_new, deg_new], axis=1), dtype=torch.float, device=self.device)
+                    topo_term = torch.matmul(node_input, w_topo)
+                    topo_norms.append(float(topo_term.norm(p=2, dim=1).mean().item()))
+
+                    if isinstance(comm_feat, list) and len(comm_feat) > layer and isinstance(comm_feat[layer], np.ndarray):
+                        cf = comm_feat[layer]
+                        if cf.shape[0] == n and cf.shape[1] == 2:
+                            comm_input = torch.tensor(cf, dtype=torch.float, device=self.device)
+                        else:
+                            comm_input = torch.zeros((n, 2), dtype=torch.float, device=self.device)
+                    else:
+                        comm_input = torch.zeros((n, 2), dtype=torch.float, device=self.device)
+                    comm_term = comm_scale * torch.matmul(comm_input, w_comm)
+                    comm_norms.append(float(comm_term.norm(p=2, dim=1).mean().item()))
+
+        topo_norm = float(np.mean(topo_norms)) if topo_norms else 0.0
+        comm_norm = float(np.mean(comm_norms)) if comm_norms else 0.0
+        ratio = comm_norm / (topo_norm + 1e-12)
+        return topo_norm, comm_norm, ratio
     def gen_graph(self,num_min,num_max):
         max_n = num_max
         min_n = num_min
@@ -197,7 +262,12 @@ class MultiDismantler:
                 break
             Random = False
             if random.uniform(0, 1) >= eps:
-                pred = self.PredictWithCurrentQNet(self.g_list, [env.action_list for env in self.env_list],[env.remove_edge for env in self.env_list])
+                pred = self.PredictWithCurrentQNet(
+                    self.g_list,
+                    [env.action_list for env in self.env_list],
+                    [env.remove_edge for env in self.env_list],
+                    [env.getAlpha() for env in self.env_list],
+                )
             else:
                 Random = True
             for i in range(num_env):
@@ -217,11 +287,11 @@ class MultiDismantler:
             sparse_dict['value'] = Variable(sparse_dict['value']).to(self.device)
         return sparse_dicts
 
-    def SetupTrain(self, idxes, g_list, covered, actions, target, remove_edges):
+    def SetupTrain(self, idxes, g_list, covered, actions, target, remove_edges, alphas=None):
         self.m_y = target
         self.inputs['target'] = Variable(torch.tensor(self.m_y).type(torch.FloatTensor)).to(self.device)
         PrepareBatchGraph1 = PrepareBatchGraph.PrepareBatchGraph(aggregatorID)
-        PrepareBatchGraph1.SetupTrain(idxes, g_list, covered, actions, remove_edges)
+        PrepareBatchGraph1.SetupTrain(idxes, g_list, covered, actions, remove_edges, alphas=alphas)
         PrepareBatchGraph1.idx_map_list = [it[0] for it in PrepareBatchGraph1.idx_map_list]
         self.inputs['action_select'] = self.SetupSparseT(PrepareBatchGraph1.act_select)
         self.inputs['rep_global'] = self.SetupSparseT(PrepareBatchGraph1.rep_global)
@@ -245,9 +315,9 @@ class MultiDismantler:
         prepareBatchGraph.graph = prepareBatchGraph.graph[0]
         return prepareBatchGraph
 
-    def SetuppredAll(self, idxes, g_list, covered, remove_edges):
+    def SetuppredAll(self, idxes, g_list, covered, remove_edges, alphas=None):
         PrepareBatchGraph1 = PrepareBatchGraph.PrepareBatchGraph(aggregatorID)
-        PrepareBatchGraph1.SetupPredAll(idxes, g_list, covered, remove_edges)
+        PrepareBatchGraph1.SetupPredAll(idxes, g_list, covered, remove_edges, alphas=alphas)
         PrepareBatchGraph1.idx_map_list = [it[0] for it in PrepareBatchGraph1.idx_map_list]
         self.inputs['rep_global'] = self.SetupSparseT(PrepareBatchGraph1.rep_global)
 
@@ -262,7 +332,7 @@ class MultiDismantler:
         self.inputs['v_adj'] = PrepareBatchGraph1.virtual_adj
         return PrepareBatchGraph1.idx_map_list
 
-    def Predict(self,g_list,covered,remove_edges,isSnapSnot):
+    def Predict(self,g_list,covered,remove_edges,alphas,isSnapSnot):
         n_graphs = len(g_list)
         for i in range(0, n_graphs, BATCH_SIZE):
             bsize = BATCH_SIZE
@@ -272,7 +342,8 @@ class MultiDismantler:
             for j in range(i, i + bsize):
                 batch_idxes[j - i] = j
             batch_idxes = np.int32(batch_idxes)
-            idx_map_list = self.SetuppredAll(batch_idxes, g_list, covered, remove_edges)
+            batch_alphas = alphas[i : i + bsize] if alphas is not None else None
+            idx_map_list = self.SetuppredAll(batch_idxes, g_list, covered, remove_edges, alphas=batch_alphas)
             #Node input is NONE for not costed scnario
             if isSnapSnot:
                 result = self.MultiDismantler_net_T.test_forward(node_input=self.inputs['node_input'], comm_input=self.inputs['comm_feat'],\
@@ -303,12 +374,12 @@ class MultiDismantler:
             assert (pos == len(raw_output))
         return pred
 
-    def PredictWithCurrentQNet(self,g_list,covered,remove_edges):
-        result = self.Predict(g_list,covered,remove_edges,False)
+    def PredictWithCurrentQNet(self,g_list,covered,remove_edges,alphas=None):
+        result = self.Predict(g_list,covered,remove_edges,alphas,False)
         return result
 
-    def PredictWithSnapshot(self,g_list,covered,remove_edges):
-        result = self.Predict(g_list,covered,remove_edges,True)
+    def PredictWithSnapshot(self,g_list,covered,remove_edges,alphas=None):
+        result = self.Predict(g_list,covered,remove_edges,alphas,True)
         return result
     #pass
     def TakeSnapShot(self):
@@ -323,11 +394,11 @@ class MultiDismantler:
                 break
         if ness:
             if self.IsDoubleDQN:
-                double_list_pred = self.PredictWithCurrentQNet(sample.g_list, sample.list_s_primes)
-                double_list_predT = self.PredictWithSnapshot(sample.g_list, sample.list_s_primes)
+                double_list_pred = self.PredictWithCurrentQNet(sample.g_list, sample.list_s_primes, sample.list_s_primes_edges, sample.list_alpha_primes)
+                double_list_predT = self.PredictWithSnapshot(sample.g_list, sample.list_s_primes, sample.list_s_primes_edges, sample.list_alpha_primes)
                 list_pred = [a[self.argMax(b)] for a, b in zip(double_list_predT, double_list_pred)]
             else:
-                list_pred = self.PredictWithSnapshot(sample.g_list, sample.list_s_primes, sample.list_s_primes_edges)
+                list_pred = self.PredictWithSnapshot(sample.g_list, sample.list_s_primes, sample.list_s_primes_edges, sample.list_alpha_primes)
 
         list_target = np.zeros([self._smoke_batch, 1])
 
@@ -343,7 +414,7 @@ class MultiDismantler:
             # list_target.append(q_rhs)
         if self.IsPrioritizedSampling:
             return self.fit_with_prioritized(sample.b_idx,sample.ISWeights,sample.g_list, sample.list_st, sample.list_at,list_target)
-        return self.fit(sample.g_list, sample.list_st, sample.list_at,list_target, sample.list_st_edges)
+        return self.fit(sample.g_list, sample.list_st, sample.list_at,list_target, sample.list_st_edges, sample.list_alpha_t)
 
     def fit_with_prioritized(self,tree_idx,ISWeights,g_list,covered,actions,list_target):
         '''
@@ -380,7 +451,7 @@ class MultiDismantler:
         return None
 
 
-    def fit(self,g_list,covered,actions,list_target,remove_edges):
+    def fit(self,g_list,covered,actions,list_target,remove_edges,alphas=None):
         loss_values = 0.0
         n_graphs = len(g_list)
         for i in range(0,n_graphs,BATCH_SIZE):
@@ -395,7 +466,8 @@ class MultiDismantler:
                 batch_idxes[j-i] = j
                 # batch_idxes.append(j)
             batch_idxes = np.int32(batch_idxes)
-            self.SetupTrain(batch_idxes, g_list, covered, actions,list_target, remove_edges)
+            batch_alphas = alphas[i : i + bsize] if alphas is not None else None
+            self.SetupTrain(batch_idxes, g_list, covered, actions,list_target, remove_edges, alphas=batch_alphas)
             #Node inpute is NONE for not costed scnario
             q_pred, cur_message_layer = self.MultiDismantler_net.train_forward(node_input=self.inputs['node_input'],\
                 subgsum_param=self.inputs['subgsum_param'], n2nsum_param=self.inputs['n2nsum_param'],\
@@ -498,8 +570,13 @@ class MultiDismantler:
                         N_start = N_end
                     frac = 0.0
                     test_start = time.time()
+                    lmcc_final_list = []
+                    audc_list = []
                     for idx in range(self._smoke_valid_count):
-                        frac += self.Test(idx)
+                        vc_i, lmcc_final_i, audc_i = self.Test(idx, return_lmcc=True)
+                        frac += vc_i
+                        lmcc_final_list.append(lmcc_final_i)
+                        audc_list.append(audc_i)
                     if frac < best_frac :
                         best_frac = frac
                         self.SaveModel('%s/best_model.ckpt' % (save_dir))
@@ -509,8 +586,37 @@ class MultiDismantler:
                     f_out.flush()
                     print('iter %d, eps %.4f, average size of vc:%.6f'%(iter, eps, frac/denom))
                     print ('testing %d graphs time: %.2fs'%(denom, test_end-test_start))
+                    if lmcc_final_list:
+                        print(
+                            "LMCC-DEBUG "
+                            f"mean_final={float(np.mean(lmcc_final_list)):.6f} "
+                            f"var_final={float(np.var(lmcc_final_list)):.6f} "
+                            f"mean_audc={float(np.mean(audc_list)):.6f} "
+                            f"var_audc={float(np.var(audc_list)):.6f}"
+                        )
+
+                    try:
+                        w_comm_norm = float(self.MultiDismantler_net.w_comm.norm().item())
+                    except Exception:
+                        w_comm_norm = float("nan")
+                    test_graphs = list(self.TestSet.graph_pool.values())
+                    comm_stats = self._ce_community_count_stats(test_graphs)
+                    topo_norm, comm_norm, ratio = self._ce_debug_graph_magnitudes(test_graphs, sample_k=8)
+                    l0m, l0v = comm_stats["layer0"]
+                    l1m, l1v = comm_stats["layer1"]
+                    print(
+                        "CE-DEBUG "
+                        f"iter={iter} "
+                        f"||W_comm||={w_comm_norm:.6f} "
+                        f"comm_count_mean=[{l0m:.2f},{l1m:.2f}] "
+                        f"comm_count_var=[{l0v:.2f},{l1v:.2f}] "
+                        f"comm_vs_topo_ratio={ratio:.6f} "
+                        f"topo_norm={topo_norm:.6f} "
+                        f"comm_norm={comm_norm:.6f}"
+                    )
+
                     N_end = time.perf_counter()
-                    print ('500 iterations total time: %.2fs\n'%(N_end-N_start))
+                    print (f'{SAVE_FREQUENCY} iterations total time: %.2fs\n'%(N_end-N_start))
                     sys.stdout.flush()
                     model_path = '%s/nrange_%d_%d_iter_%d.ckpt' % (save_dir, NUM_MIN, NUM_MAX, iter)
                     if(skip_saved_iter and iter==start_iter):
@@ -702,7 +808,12 @@ class MultiDismantler:
         while (not self.test_env.isTerminal()):              
             print ('Iteration:%d'%iter)
             iter += 1
-            list_pred = self.PredictWithCurrentQNet(g_list, [self.test_env.action_list], [self.test_env.remove_edge])
+            list_pred = self.PredictWithCurrentQNet(
+                g_list,
+                [self.test_env.action_list],
+                [self.test_env.remove_edge],
+                [self.test_env.getAlpha()],
+            )
             start_time = time.time()
             batchSol = np.argsort(-list_pred[0])[:step]
 
@@ -717,7 +828,7 @@ class MultiDismantler:
                     continue
         return sol, self.test_env.score, self.test_env.MaxCCList
 
-    def Test(self,gid):
+    def Test(self, gid, return_lmcc: bool = False):
         g_list = []
         self.test_env.s0(self.TestSet.Get(gid)) 
         g_list.append(self.test_env.graph)
@@ -725,7 +836,12 @@ class MultiDismantler:
         sol = []
         while (not self.test_env.isTerminal()):
             # cost += 1
-            list_pred = self.PredictWithCurrentQNet(g_list, [self.test_env.action_list], [self.test_env.remove_edge])
+            list_pred = self.PredictWithCurrentQNet(
+                g_list,
+                [self.test_env.action_list],
+                [self.test_env.remove_edge],
+                [self.test_env.getAlpha()],
+            )
             # new_action = self.argMax(list_pred[0])
             new_action = self.argMax(list_pred[0])
             self.test_env.stepWithoutReward(new_action)
@@ -734,7 +850,14 @@ class MultiDismantler:
         #solution = sol + list(set(nodes)^set(sol))
         #Robustness = self.utils.getRobustness(g_list[0], solution)
         remian_nodes = list(set(nodes)^set(sol))
-        return self.test_env.score + len(remian_nodes) / (self.test_env.graph.max_rank * self.test_env.graph.num_nodes)
+        vc = self.test_env.score + len(remian_nodes) / (self.test_env.graph.max_rank * self.test_env.graph.num_nodes)
+        if not return_lmcc:
+            return vc
+
+        lmcc_curve = list(self.test_env.MaxCCList)
+        lmcc_final = float(lmcc_curve[-1]) if lmcc_curve else 1.0
+        audc = float(np.mean(lmcc_curve)) if lmcc_curve else 1.0
+        return vc, lmcc_final, audc
         #return Robustness
 
 
@@ -747,7 +870,12 @@ class MultiDismantler:
         sol = []
         # new_n = math.sqrt(g.num_nodes)/g.max_rank
         while (not self.test_env.isTerminal()):
-            list_pred = self.PredictWithCurrentQNet(g_list, [self.test_env.action_list], [self.test_env.remove_edge])
+            list_pred = self.PredictWithCurrentQNet(
+                g_list,
+                [self.test_env.action_list],
+                [self.test_env.remove_edge],
+                [self.test_env.getAlpha()],
+            )
             batchSol = np.argsort(-list_pred[0])[:step]
             # if self.test_env.MaxCCList[-1] <= new_n:
             #     break

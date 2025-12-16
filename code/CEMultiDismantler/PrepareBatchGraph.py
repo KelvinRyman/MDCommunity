@@ -74,7 +74,7 @@ class PrepareBatchGraph:
         assert idx_map[0] == idx_map[1]
         return n,counter,twohop_number,threehop_number,idx_map,remove_edge
 
-    def Setup_graph_input(self, idxes, g_list, covered, actions, remove_edges):
+    def Setup_graph_input(self, idxes, g_list, covered, actions, remove_edges, alphas=None):
         self.act_select = [SparseMatrix(),SparseMatrix()]
         self.rep_global = [SparseMatrix(),SparseMatrix()]
         self.idx_map_list = []
@@ -85,6 +85,7 @@ class PrepareBatchGraph:
             g = g_list[idx]
             temp_feat1 = []
             temp_feat2 = []
+            alpha_val = float(alphas[i]) if alphas is not None else 1.0
             if remove_edges == None:
                 avail, counter, twohop_number, _, idx_map, remove_edge = self.get_status_info(g, covered[i], remove_edges)
             else:
@@ -96,9 +97,11 @@ class PrepareBatchGraph:
             temp_feat1.append(counter[0] / g.num_edges[0])
             temp_feat1.append(twohop_number[0] / (g.num_nodes * g.num_nodes))
             temp_feat1.append(1.0)
+            temp_feat1.append(alpha_val)
             temp_feat2.append(counter[1] / g.num_edges[1])
             temp_feat2.append(twohop_number[1] / (g.num_nodes * g.num_nodes))
             temp_feat2.append(1.0)
+            temp_feat2.append(alpha_val)
             temp_feat = [temp_feat1,temp_feat2]
             for j in range (2):
                 node_cnt[j] += avail[j]
@@ -127,6 +130,7 @@ class PrepareBatchGraph:
 
         for i, idx in enumerate(idxes):
             g = g_list[idx]
+            alpha_val = float(alphas[i]) if alphas is not None else 1.0
             idx_map = self.idx_map_list[i]
             remove_edge = self.remove_edge_list[i]
             t = [0,0]
@@ -144,7 +148,7 @@ class PrepareBatchGraph:
                     if hasattr(g, "community_feat") and len(g.community_feat) > h:
                         feat = g.community_feat[h]
                         if isinstance(feat, np.ndarray) and feat.shape[0] > j:
-                            self.comm_feat[h, new_idx, :] = feat[j]
+                            self.comm_feat[h, new_idx, :] = alpha_val * feat[j]
                     t[h] += 1
             #error
             assert t[0] == self.avail_act_cnt[i][0]
@@ -187,11 +191,11 @@ class PrepareBatchGraph:
             self.subgsum_param[j] = self.convert_sparse_to_tensor(self.subgsum_param[j])
 
 
-    def SetupTrain(self, idxes, g_list, covered, actions, remove_edges):
-        self.Setup_graph_input(idxes, g_list, covered, actions, remove_edges)
+    def SetupTrain(self, idxes, g_list, covered, actions, remove_edges, alphas=None):
+        self.Setup_graph_input(idxes, g_list, covered, actions, remove_edges, alphas=alphas)
 
-    def SetupPredAll(self, idxes, g_list, covered, remove_edges):
-        self.Setup_graph_input(idxes, g_list, covered, None, remove_edges)
+    def SetupPredAll(self, idxes, g_list, covered, remove_edges, alphas=None):
+        self.Setup_graph_input(idxes, g_list, covered, None, remove_edges, alphas=alphas)
     '''
     def convert_sparse_to_tensor(self, matrix):
         indices = np.column_stack((matrix.rowIndex, matrix.colIndex))
@@ -348,4 +352,3 @@ class PrepareBatchGraph:
                 virtual_adj[row_idx][col_idx] = weight
             virtual_adjs.append(virtual_adj)
         return [result,virtual_adjs]
-

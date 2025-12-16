@@ -10,7 +10,6 @@ from MRGNN.aggregators import MeanAggregator, LSTMAggregator, PoolAggregator
 from MRGNN.utils import LogisticRegression
 from MRGNN.mutil_layer_weight import LayerNodeAttention_weight, Cosine_similarity, SemanticAttention, \
     BitwiseMultipyLogis
-import os
 import sys
 # cudnn.benchmark = False
 # cudnn.deterministic = True
@@ -22,7 +21,7 @@ import sys
 class MultiDismantler_net(nn.Module):
     def __init__(self, layerNodeAttention_weight,
                  embedding_size=64, w_initialization_std=1, reg_hidden=32, max_bp_iter=3,
-                 embeddingMethod=1, aux_dim=4, device=None, node_attr=False):
+                 embeddingMethod=1, aux_dim=4, device=None, node_attr=False, comm_scale: float = 1.0):
         super(MultiDismantler_net, self).__init__()
 
         self.layerNodeAttention_weight = layerNodeAttention_weight
@@ -38,7 +37,7 @@ class MultiDismantler_net(nn.Module):
         self.device = device
         self.node_attr = node_attr
         self.act = nn.ReLU()
-        self.comm_scale = float(os.getenv("CE_COMM_SCALE", "1.0"))
+        self.comm_scale = float(comm_scale)
         
         # [2, embed_dim]
         self.w_n2l = nn.parameter.Parameter(data=self.rand_generator(0, self.w_initialization_std,\
@@ -93,6 +92,42 @@ class MultiDismantler_net(nn.Module):
                                                                      size=(128, 1)))
         
         self.flag = 0
+
+    def debug_comm_vs_topo_magnitude(self, comm_input, adj, v_adj, n2nsum_param, subgsum_param):
+        """
+        Returns (topo_norm, comm_norm, ratio) where norms are mean L2 over nodes/layers
+        for the first-layer message input: topo=W_topo*x_topo, comm=comm_scale*W_comm*[z,P].
+        """
+        nodes_cnt = int(n2nsum_param[0]["m"])
+        y_nodes_size = int(subgsum_param[0]["m"])
+        if nodes_cnt <= 0:
+            return 0.0, 0.0, 0.0
+
+        with torch.no_grad():
+            node_input = torch.zeros((2, nodes_cnt, 2), dtype=torch.float, device=self.device)
+            comm_input = comm_input.to(self.device).type(torch.float)
+            adj_t = torch.tensor(np.array(adj), dtype=torch.float, device=self.device)
+            v_adj_t = torch.tensor(np.array(v_adj), dtype=torch.float, device=self.device)
+
+            for l in range(2):
+                for i in range(y_nodes_size):
+                    node_in_graph = torch.where(v_adj_t[l][i] == 1)
+                    if node_in_graph[0].numel() == 0:
+                        continue
+                    degree = torch.sum(adj_t[l][node_in_graph], axis=1, keepdims=True)
+                    degree_max, _ = torch.max(degree, dim=0)
+                    degree_new = degree / degree_max if float(degree_max) > 0 else degree
+                    node_feature = torch.cat((degree_new, degree_new), axis=1)
+                    node_input[l][node_in_graph] = node_feature
+
+            topo_term = torch.matmul(node_input, self.w_n2l)  # [2, nodes, embed]
+            comm_term = self.comm_scale * torch.matmul(comm_input, self.w_comm)  # [2, nodes, embed]
+
+            topo_norm = topo_term.norm(p=2, dim=2).mean().item()
+            comm_norm = comm_term.norm(p=2, dim=2).mean().item()
+            ratio = comm_norm / (topo_norm + 1e-12)
+            return topo_norm, comm_norm, ratio
+
     def train_forward(self, node_input, subgsum_param, n2nsum_param, action_select, aux_input, comm_input=None, adj=None, v_adj=None):
         
         nodes_cnt = n2nsum_param[0]['m']

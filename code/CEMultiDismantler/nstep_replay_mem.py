@@ -14,6 +14,8 @@ class ReplaySample:
         self.list_term: List[bool] = []
         self.list_st_edges: List[List[set]] = []
         self.list_s_primes_edges: List[List[set]] = []
+        self.list_alpha_t: List[float] = []
+        self.list_alpha_primes: List[float] = []
 
 class NStepReplayMem:
     def __init__(self, memory_size: int):
@@ -38,9 +40,11 @@ class NStepReplayMem:
        
         self.remove_edges: List[List[set]] = [[set(), set()] for _ in range(memory_size)]
         self.remove_edges_primes: List[List[set]] = [[set(), set()] for _ in range(memory_size)]
+        self.alphas: List[float] = [1.0] * memory_size
+        self.alphas_primes: List[float] = [1.0] * memory_size
 
 
-    def add(self, g: Graph, s_t: List[int], a_t: int, r_t: float, s_prime: List[int], terminal: bool, remove_edges: List[set], remove_edges_primes: List[set]):
+    def add(self, g: Graph, s_t: List[int], a_t: int, r_t: float, s_prime: List[int], terminal: bool, remove_edges: List[set], remove_edges_primes: List[set], alpha_t: float, alpha_prime: float):
    
         self.graphs[self.current] = g
         self.actions[self.current] = a_t
@@ -50,6 +54,8 @@ class NStepReplayMem:
         self.terminals[self.current] = terminal
         self.remove_edges[self.current] = [remove_edges[0].copy(),remove_edges[1].copy()]
         self.remove_edges_primes[self.current] = [remove_edges_primes[0].copy(),remove_edges_primes[1].copy()]  
+        self.alphas[self.current] = float(alpha_t)
+        self.alphas_primes[self.current] = float(alpha_prime)
        
         self.count = max(self.count, self.current + 1)
         self.current = (self.current + 1) % self.memory_size
@@ -73,11 +79,14 @@ class NStepReplayMem:
                 s_prime = env.action_list.copy()
                 remove_edges_primes = env.remove_edge.copy()
                 term_t = True
+                alpha_prime = float(env.getAlpha())
             else:
                 cur_r = env.sum_rewards[i] - env.sum_rewards[i + n_step]
                 s_prime = env.state_seq[i + n_step].copy()
                 remove_edges_primes = [env.state_seq_edges[i + n_step][0].copy(), env.state_seq_edges[i + n_step][1].copy()]
-            self.add(env.graph, env.state_seq[i].copy(), env.act_seq[i], cur_r, s_prime, term_t, [env.state_seq_edges[i][0].copy(),env.state_seq_edges[i][1].copy()], remove_edges_primes)
+                alpha_prime = float(env.alpha_seq[i + n_step])
+            alpha_t = float(env.alpha_seq[i])
+            self.add(env.graph, env.state_seq[i].copy(), env.act_seq[i], cur_r, s_prime, term_t, [env.state_seq_edges[i][0].copy(),env.state_seq_edges[i][1].copy()], remove_edges_primes, alpha_t, alpha_prime)
     
             
     def sampling(self, batch_size: int) -> ReplaySample:
@@ -94,4 +103,6 @@ class NStepReplayMem:
         result.list_term = [self.terminals[i] for i in indices]
         result.list_st_edges = [self.remove_edges[i].copy() for i in indices]
         result.list_s_primes_edges = [self.remove_edges_primes[i].copy() for i in indices]
+        result.list_alpha_t = [float(self.alphas[i]) for i in indices]
+        result.list_alpha_primes = [float(self.alphas_primes[i]) for i in indices]
         return result
