@@ -39,6 +39,8 @@ LEARNING_RATE = 0.0001   #
 MEMORY_SIZE = 100000
 Alpha = 0.001 ## weight of reconstruction loss
 CE_COMM_SCALE = 0.3
+# Train-time community feature noise: sigma = std(comm_feat) * ratio (ratio=0.1 => std/10); disabled for inference.
+CE_COMM_NOISE_RATIO = 0.1
 ########################### hyperparameters for priority(start)#########################################
 epsilon = 0.0000001  # small amount to avoid zero priority
 alpha = 0.6  # [0~1] convert the importance of TD error to priority
@@ -99,11 +101,12 @@ class MultiDismantler:
         else:
             self.nStepReplayMem = nstep_replay_mem.NStepReplayMem(MEMORY_SIZE)
 
+        self.ce_lambda_cascade = float(os.getenv("CE_LAMBDA_CASCADE", "0.1"))
         for i in range(num_env):
-            self.env_list.append(mvc_env.MvcEnv(NUM_MAX))
+            self.env_list.append(mvc_env.MvcEnv(NUM_MAX, cost_type="unit", lambda_cascade=self.ce_lambda_cascade))
             self.g_list.append(graph.Graph())
 
-        self.test_env = mvc_env.MvcEnv(NUM_MAX)
+        self.test_env = mvc_env.MvcEnv(NUM_MAX, cost_type="unit", lambda_cascade=self.ce_lambda_cascade)
 
         print("CUDA:", torch.cuda.is_available())
         torch.set_num_threads(16)
@@ -124,6 +127,8 @@ class MultiDismantler:
         pytorch_total_params = sum(p.numel() for p in self.MultiDismantler_net.parameters())
         print("Total number of MultiDismantler_net parameters: {}".format(pytorch_total_params))
         print(f"CE_COMM_SCALE: {CE_COMM_SCALE}")
+        print(f"CE_COMM_NOISE_RATIO (train-only): {CE_COMM_NOISE_RATIO}")
+        print(f"CE_LAMBDA_CASCADE: {self.ce_lambda_cascade}")
         self.flag = 1
 
         # Smoke-test configuration (keeps full pipeline, shrinks sizes)
@@ -300,7 +305,12 @@ class MultiDismantler:
         self.inputs['subgsum_param'] = self.SetupSparseT(PrepareBatchGraph1.subgsum_param)
         self.inputs['node_input'] = None
         self.inputs['aux_input'] = Variable(torch.tensor(PrepareBatchGraph1.aux_feat).type(torch.FloatTensor)).to(self.device)
-        self.inputs['comm_feat'] = Variable(torch.tensor(PrepareBatchGraph1.comm_feat).type(torch.FloatTensor)).to(self.device)
+        comm_feat = Variable(torch.tensor(PrepareBatchGraph1.comm_feat).type(torch.FloatTensor)).to(self.device)
+        if CE_COMM_NOISE_RATIO and CE_COMM_NOISE_RATIO > 0:
+            # Dynamic Gaussian noise: sigma = std(comm_feat) / 10 (ratio=0.1), train-only.
+            std = comm_feat.std(dim=1, keepdim=True, unbiased=False)
+            comm_feat = comm_feat + torch.randn_like(comm_feat) * (std * float(CE_COMM_NOISE_RATIO))
+        self.inputs['comm_feat'] = comm_feat
         self.inputs['adj'] = PrepareBatchGraph1.adj
         self.inputs['v_adj'] = PrepareBatchGraph1.virtual_adj
 
@@ -554,6 +564,7 @@ class MultiDismantler:
         
         best_frac = inf
         max_iter_local = start_iter + self._smoke_iter if self._smoke_fast else self._smoke_iter
+        last_saved_iter = None
         try:
             for iter in range(start_iter, max_iter_local):
                 start = time.perf_counter()
@@ -624,12 +635,20 @@ class MultiDismantler:
                     else:
                         if iter % SAVE_FREQUENCY == 0:
                             self.SaveModel(model_path)
+                            last_saved_iter = iter
                 if( (iter % UPDATE_TIME == 0) or (iter==start_iter)):
                     self.TakeSnapShot()
                 self.Fit()
                 # for name, param in self.MultiDismantler_net.named_parameters():
                 #     print("Parameter:", name)
                 #     print("Gradient:", param.grad)
+
+            # Ensure the final state (after the last Fit) is checkpointed.
+            # `iter` in the loop is 0-based and ends at `max_iter_local-1`, so the final model corresponds to `max_iter_local`.
+            if max_iter_local > start_iter:
+                final_model_path = '%s/nrange_%d_%d_iter_%d.ckpt' % (save_dir, NUM_MIN, NUM_MAX, max_iter_local)
+                if last_saved_iter != max_iter_local:
+                    self.SaveModel(final_model_path)
         finally:
             if f_out is not None:
                 f_out.close()
