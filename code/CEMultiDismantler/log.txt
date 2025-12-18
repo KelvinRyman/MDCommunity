@@ -148,3 +148,269 @@ testing 200 graphs time: 66.97s
 500 iterations total time: 588.58s
 
 model has been saved success!
+===Train End===
+===Train Start===
+(project-graph) PS F:\project\project-graph\code> .\run.ps1 CEMultiDismantler train
+CUDA: True
+Total number of MultiDismantler_net parameters: 31334
+CE_COMM_SCALE: 0.3
+100%|███████████████████████████████████████████████████████████████████████████████| 200/200 [00:01<00:00, 101.42it/s]
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 96.84it/s]
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 98.08it/s]
+model has been saved success!
+iter 0, eps 1.0000, average size of vc:0.147756
+testing 200 graphs time: 97.91s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.484437 var_audc=0.019537
+CE-DEBUG iter=0 ||W_comm||=0.000000 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.000000 topo_norm=2.026613 comm_norm=0.000000
+1000 iterations total time: 108.16s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 92.37it/s]
+iter 1000, eps 0.9050, average size of vc:0.332955
+testing 200 graphs time: 178.61s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.553602 var_audc=0.007832
+CE-DEBUG iter=1000 ||W_comm||=0.081920 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.006253 topo_norm=2.026224 comm_norm=0.012669
+1000 iterations total time: 603.63s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 96.32it/s]
+iter 2000, eps 0.8100, average size of vc:0.340066
+testing 200 graphs time: 180.79s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.564871 var_audc=0.005671
+CE-DEBUG iter=2000 ||W_comm||=0.177223 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.013335 topo_norm=2.026048 comm_norm=0.027018
+1000 iterations total time: 673.66s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 91.95it/s]
+iter 3000, eps 0.7150, average size of vc:0.254991
+testing 200 graphs time: 125.21s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.527156 var_audc=0.017259
+CE-DEBUG iter=3000 ||W_comm||=0.367681 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.028001 topo_norm=2.025411 comm_norm=0.056713
+1000 iterations total time: 662.36s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 96.43it/s]
+iter 4000, eps 0.6200, average size of vc:0.172368
+testing 200 graphs time: 86.20s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.458942 var_audc=0.023763
+CE-DEBUG iter=4000 ||W_comm||=0.422121 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.032183 topo_norm=2.025208 comm_norm=0.065178
+1000 iterations total time: 649.40s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 96.81it/s]
+iter 5000, eps 0.5250, average size of vc:0.157450
+testing 200 graphs time: 84.02s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.433906 var_audc=0.024842
+CE-DEBUG iter=5000 ||W_comm||=0.440520 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.033586 topo_norm=2.025041 comm_norm=0.068013
+1000 iterations total time: 677.66s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 93.46it/s]
+iter 6000, eps 0.4300, average size of vc:0.161837
+testing 200 graphs time: 96.13s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.416021 var_audc=0.022530
+CE-DEBUG iter=6000 ||W_comm||=0.462483 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.035264 topo_norm=2.024838 comm_norm=0.071405
+1000 iterations total time: 718.38s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 99.19it/s]
+iter 7000, eps 0.3350, average size of vc:0.170765
+testing 200 graphs time: 91.92s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.453326 var_audc=0.021217
+CE-DEBUG iter=7000 ||W_comm||=0.486883 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.037134 topo_norm=2.024550 comm_norm=0.075179
+1000 iterations total time: 760.51s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 99.16it/s]
+iter 8000, eps 0.2400, average size of vc:0.151971
+testing 200 graphs time: 83.41s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.419650 var_audc=0.020406
+CE-DEBUG iter=8000 ||W_comm||=0.511637 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.039021 topo_norm=2.024282 comm_norm=0.078990
+1000 iterations total time: 797.27s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 97.96it/s]
+iter 9000, eps 0.1450, average size of vc:0.165009
+testing 200 graphs time: 80.54s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.473497 var_audc=0.018664
+CE-DEBUG iter=9000 ||W_comm||=0.529230 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.040355 topo_norm=2.024188 comm_norm=0.081686
+1000 iterations total time: 807.89s
+
+model has been saved success!
+
+generating new training graphs...
+100%|█████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:09<00:00, 100.93it/s]
+iter 10000, eps 0.0500, average size of vc:0.166743
+testing 200 graphs time: 88.43s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.453510 var_audc=0.020703
+CE-DEBUG iter=10000 ||W_comm||=0.539140 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.041096 topo_norm=2.024008 comm_norm=0.083178
+1000 iterations total time: 815.37s
+
+model has been saved success!
+
+generating new training graphs...
+100%|█████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:09<00:00, 100.88it/s]
+model has been saved success!
+iter 11000, eps 0.0500, average size of vc:0.142704
+testing 200 graphs time: 75.55s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.427921 var_audc=0.023249
+CE-DEBUG iter=11000 ||W_comm||=0.545143 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.041519 topo_norm=2.024194 comm_norm=0.084042
+1000 iterations total time: 801.17s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 93.46it/s]
+model has been saved success!
+iter 12000, eps 0.0500, average size of vc:0.126532
+testing 200 graphs time: 71.13s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.391076 var_audc=0.018914
+CE-DEBUG iter=12000 ||W_comm||=0.551000 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.041924 topo_norm=2.024134 comm_norm=0.084859
+1000 iterations total time: 796.08s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:34<00:00, 29.41it/s]
+iter 13000, eps 0.0500, average size of vc:0.127773
+testing 200 graphs time: 196.04s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.374943 var_audc=0.019904
+CE-DEBUG iter=13000 ||W_comm||=0.559882 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.042565 topo_norm=2.024180 comm_norm=0.086160
+1000 iterations total time: 1375.44s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:18<00:00, 54.26it/s]
+iter 14000, eps 0.0500, average size of vc:0.130115
+testing 200 graphs time: 135.87s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.374192 var_audc=0.020470
+CE-DEBUG iter=14000 ||W_comm||=0.570715 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.043342 topo_norm=2.023982 comm_norm=0.087723
+1000 iterations total time: 1639.49s
+
+model has been saved success!
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:35<00:00, 27.83it/s]
+model has been saved success!
+iter 15000, eps 0.0500, average size of vc:0.123832
+testing 200 graphs time: 250.88s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.377016 var_audc=0.019871
+CE-DEBUG iter=15000 ||W_comm||=0.580513 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.044051 topo_norm=2.024002 comm_norm=0.089158
+1000 iterations total time: 1991.67s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:37<00:00, 26.96it/s]
+model has been saved success!
+iter 16000, eps 0.0500, average size of vc:0.122081
+testing 200 graphs time: 248.63s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.369746 var_audc=0.019795
+CE-DEBUG iter=16000 ||W_comm||=0.586028 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.044417 topo_norm=2.023871 comm_norm=0.089895
+1000 iterations total time: 2246.35s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:37<00:00, 26.50it/s]
+iter 17000, eps 0.0500, average size of vc:0.128112
+testing 200 graphs time: 290.03s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.360974 var_audc=0.021515
+CE-DEBUG iter=17000 ||W_comm||=0.593729 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.044968 topo_norm=2.023826 comm_norm=0.091007
+1000 iterations total time: 1782.72s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:35<00:00, 28.08it/s]
+iter 18000, eps 0.0500, average size of vc:0.122121
+testing 200 graphs time: 245.32s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.374906 var_audc=0.020649
+CE-DEBUG iter=18000 ||W_comm||=0.601672 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.045527 topo_norm=2.023756 comm_norm=0.092135
+1000 iterations total time: 2239.08s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:36<00:00, 27.65it/s]
+model has been saved success!
+iter 19000, eps 0.0500, average size of vc:0.119897
+testing 200 graphs time: 239.66s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.375099 var_audc=0.018942
+CE-DEBUG iter=19000 ||W_comm||=0.607650 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.045933 topo_norm=2.023650 comm_norm=0.092952
+1000 iterations total time: 2170.16s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:36<00:00, 27.59it/s]
+model has been saved success!
+iter 20000, eps 0.0500, average size of vc:0.118521
+testing 200 graphs time: 252.40s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.357463 var_audc=0.019968
+CE-DEBUG iter=20000 ||W_comm||=0.611390 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.046170 topo_norm=2.023596 comm_norm=0.093429
+1000 iterations total time: 2220.15s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:35<00:00, 28.28it/s]
+iter 21000, eps 0.0500, average size of vc:0.119589
+testing 200 graphs time: 245.57s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.365728 var_audc=0.019446
+CE-DEBUG iter=21000 ||W_comm||=0.615541 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.046415 topo_norm=2.023633 comm_norm=0.093927
+1000 iterations total time: 2150.35s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:11<00:00, 88.58it/s]
+model has been saved success!
+iter 22000, eps 0.0500, average size of vc:0.117697
+testing 200 graphs time: 75.19s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.367915 var_audc=0.019556
+CE-DEBUG iter=22000 ||W_comm||=0.618164 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.046548 topo_norm=2.023539 comm_norm=0.094192
+1000 iterations total time: 768.11s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:10<00:00, 96.46it/s]
+iter 23000, eps 0.0500, average size of vc:0.118594
+testing 200 graphs time: 73.80s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.364192 var_audc=0.019668
+CE-DEBUG iter=23000 ||W_comm||=0.620599 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.046657 topo_norm=2.023583 comm_norm=0.094414
+1000 iterations total time: 759.62s
+
+model has been saved success!
+
+generating new training graphs...
+100%|██████████████████████████████████████████████████████████████████████████████| 1000/1000 [00:12<00:00, 80.33it/s]
+model has been saved success!
+iter 24000, eps 0.0500, average size of vc:0.117494
+testing 200 graphs time: 70.33s
+LMCC-DEBUG mean_final=0.071717 var_final=0.009434 mean_audc=0.375580 var_audc=0.018953
+CE-DEBUG iter=24000 ||W_comm||=0.621163 comm_count_mean=[8.77,8.95] comm_count_var=[24.69,24.91] comm_vs_topo_ratio=0.046638 topo_norm=2.023591 comm_norm=0.094375
+1000 iterations total time: 757.40s

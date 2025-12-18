@@ -10,6 +10,23 @@ try:
     import community as community_louvain  # python-louvain package
 except Exception:
     community_louvain = None
+try:
+    import igraph as ig  # python-igraph
+    import leidenalg  # Leiden community detection
+except Exception:
+    ig = None
+    leidenalg = None
+
+LEIDEN_NODE_THRESHOLD = 1000
+_LEIDEN_FALLBACK_WARNED = False
+
+
+def _warn_leiden_fallback_once():
+    global _LEIDEN_FALLBACK_WARNED
+    if _LEIDEN_FALLBACK_WARNED:
+        return
+    _LEIDEN_FALLBACK_WARNED = True
+    print("CE-WARN: Leiden unavailable; falling back to Louvain. Install `python-igraph` + `leidenalg` to enable Leiden.")
 class Graph:
     def __init__(self, N = 0):
         # N number of initialized nodes
@@ -80,6 +97,54 @@ class Graph:
             random.setstate(py_state)
             np.random.set_state(np_state)
 
+    def _run_leiden(self, G_nx: nx.Graph):
+        if ig is None or leidenalg is None:
+            return {}
+
+        seed = 0
+        py_state = random.getstate()
+        np_state = np.random.get_state()
+        try:
+            nodes = list(G_nx.nodes())
+            if not nodes:
+                return {}
+            node_to_idx = {node: i for i, node in enumerate(nodes)}
+            edges = [(node_to_idx[u], node_to_idx[v]) for u, v in G_nx.edges()]
+            g_ig = ig.Graph(n=len(nodes), edges=edges, directed=False)
+
+            # Isolate RNG to keep training sampling reproducible.
+            random.seed(seed)
+            np.random.seed(seed)
+
+            try:
+                sig = inspect.signature(leidenalg.find_partition)
+                if "seed" in sig.parameters:
+                    part = leidenalg.find_partition(g_ig, leidenalg.ModularityVertexPartition, seed=seed)
+                else:
+                    part = leidenalg.find_partition(g_ig, leidenalg.ModularityVertexPartition)
+            except Exception:
+                part = leidenalg.find_partition(g_ig, leidenalg.ModularityVertexPartition)
+
+            membership = getattr(part, "membership", None)
+            if membership is None:
+                return {}
+            return {node: int(membership[idx]) for node, idx in node_to_idx.items()}
+        except Exception:
+            return {}
+        finally:
+            random.setstate(py_state)
+            np.random.set_state(np_state)
+
+    def _run_partition(self, G_nx: nx.Graph):
+        if self.num_nodes and self.num_nodes < LEIDEN_NODE_THRESHOLD:
+            if ig is None or leidenalg is None:
+                _warn_leiden_fallback_once()
+            else:
+                part = self._run_leiden(G_nx)
+                if part:
+                    return part
+        return self._run_louvain(G_nx)
+
     def _layer_z_p(self, G_nx: nx.Graph, partition):
         n = self.num_nodes
         if n == 0:
@@ -147,7 +212,7 @@ class Graph:
         z_raw = []
         p_raw = []
         for layer, G in enumerate(graphs):
-            part = self._run_louvain(G)
+            part = self._run_partition(G)
             if not part:
                 part = {i: 0 for i in range(self.num_nodes)}
             partitions.append({i: int(part.get(i, 0)) for i in range(self.num_nodes)})
@@ -234,6 +299,53 @@ class Graph_test:
             random.setstate(py_state)
             np.random.set_state(np_state)
 
+    def _run_leiden(self, G_nx: nx.Graph):
+        if ig is None or leidenalg is None:
+            return {}
+
+        seed = 0
+        py_state = random.getstate()
+        np_state = np.random.get_state()
+        try:
+            nodes = list(G_nx.nodes())
+            if not nodes:
+                return {}
+            node_to_idx = {node: i for i, node in enumerate(nodes)}
+            edges = [(node_to_idx[u], node_to_idx[v]) for u, v in G_nx.edges()]
+            g_ig = ig.Graph(n=len(nodes), edges=edges, directed=False)
+
+            random.seed(seed)
+            np.random.seed(seed)
+
+            try:
+                sig = inspect.signature(leidenalg.find_partition)
+                if "seed" in sig.parameters:
+                    part = leidenalg.find_partition(g_ig, leidenalg.ModularityVertexPartition, seed=seed)
+                else:
+                    part = leidenalg.find_partition(g_ig, leidenalg.ModularityVertexPartition)
+            except Exception:
+                part = leidenalg.find_partition(g_ig, leidenalg.ModularityVertexPartition)
+
+            membership = getattr(part, "membership", None)
+            if membership is None:
+                return {}
+            return {node: int(membership[idx]) for node, idx in node_to_idx.items()}
+        except Exception:
+            return {}
+        finally:
+            random.setstate(py_state)
+            np.random.set_state(np_state)
+
+    def _run_partition(self, G_nx: nx.Graph):
+        if self.num_nodes and self.num_nodes < LEIDEN_NODE_THRESHOLD:
+            if ig is None or leidenalg is None:
+                _warn_leiden_fallback_once()
+            else:
+                part = self._run_leiden(G_nx)
+                if part:
+                    return part
+        return self._run_louvain(G_nx)
+
     def _layer_z_p(self, G_nx: nx.Graph, partition):
         n = self.num_nodes
         if n == 0:
@@ -301,7 +413,7 @@ class Graph_test:
         z_raw = []
         p_raw = []
         for layer, G in enumerate(graphs):
-            part = self._run_louvain(G)
+            part = self._run_partition(G)
             if not part:
                 part = {i: 0 for i in range(self.num_nodes)}
             partitions.append({i: int(part.get(i, 0)) for i in range(self.num_nodes)})

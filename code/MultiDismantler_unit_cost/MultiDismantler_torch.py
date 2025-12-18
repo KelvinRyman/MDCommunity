@@ -442,6 +442,9 @@ class MultiDismantler:
         loss = 0
 
         save_dir = './models/g0-1_10w_TORCH-Model_%s_%s_%s'%(self.g_type,NUM_MIN, NUM_MAX)
+        # Keep smoke tests isolated so they don't interfere with full runs.
+        if self._smoke_fast:
+            save_dir = save_dir + "_SMOKE"
         if not os.path.exists(save_dir):
             os.mkdir(save_dir)
         VCFile = '%s/ModelVC_%d_%d.csv'%(save_dir, NUM_MIN, NUM_MAX)
@@ -476,10 +479,19 @@ class MultiDismantler:
                 start_iter = 0
                 f_out = open(VCFile, 'w')
         else:
+            # Fresh run: backup any existing VC file to avoid overwriting.
+            if os.path.isfile(VCFile):
+                try:
+                    bak = VCFile + time.strftime(".bak_%Y%m%d_%H%M%S")
+                    os.replace(VCFile, bak)
+                    print(f"Backed up existing VCFile to: {bak}")
+                except Exception:
+                    pass
             f_out = open(VCFile, 'w')
         
         best_frac = inf
         max_iter_local = start_iter + self._smoke_iter if self._smoke_fast else self._smoke_iter
+        last_saved_iter = None
         try:
             for iter in range(start_iter, max_iter_local):
                 start = time.perf_counter()
@@ -516,12 +528,20 @@ class MultiDismantler:
                     else:
                         if iter % SAVE_FREQUENCY == 0:
                             self.SaveModel(model_path)
+                            last_saved_iter = iter
                 if( (iter % UPDATE_TIME == 0) or (iter==start_iter)):
                     self.TakeSnapShot()
                 self.Fit()
                 # for name, param in self.MultiDismantler_net.named_parameters():
                 #     print("Parameter:", name)
                 #     print("Gradient:", param.grad)
+        
+            # Ensure the final state (after the last Fit) is checkpointed.
+            # `iter` in the loop is 0-based and ends at `max_iter_local-1`, so the final model corresponds to `max_iter_local`.
+            if max_iter_local > start_iter:
+                final_model_path = '%s/nrange_%d_%d_iter_%d.ckpt' % (save_dir, NUM_MIN, NUM_MAX, max_iter_local)
+                if last_saved_iter != max_iter_local:
+                    self.SaveModel(final_model_path)
         finally:
             if f_out is not None:
                 f_out.close()

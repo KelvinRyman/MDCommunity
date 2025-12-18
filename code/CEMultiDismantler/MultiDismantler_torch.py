@@ -33,14 +33,15 @@ from MRGNN.aggregators import MeanAggregator, LSTMAggregator, PoolAggregator
 GAMMA = 1  # decay rate of past observations
 UPDATE_TIME = 1000
 EMBEDDING_SIZE = 64
-MAX_ITERATION = 31000
+MAX_ITERATION = 12000
 SAVE_FREQUENCY = 1000
 LEARNING_RATE = 0.0001   #
 MEMORY_SIZE = 100000
 Alpha = 0.001 ## weight of reconstruction loss
-CE_COMM_SCALE = 0.3
+CE_COMM_SCALE = 0
 # Train-time community feature noise: sigma = std(comm_feat) * ratio (ratio=0.1 => std/10); disabled for inference.
-CE_COMM_NOISE_RATIO = 0.1
+CE_COMM_NOISE_RATIO = 0
+CE_LAMBDA_CASCADE = 0.1
 ########################### hyperparameters for priority(start)#########################################
 epsilon = 0.0000001  # small amount to avoid zero priority
 alpha = 0.6  # [0~1] convert the importance of TD error to priority
@@ -101,12 +102,11 @@ class MultiDismantler:
         else:
             self.nStepReplayMem = nstep_replay_mem.NStepReplayMem(MEMORY_SIZE)
 
-        self.ce_lambda_cascade = float(os.getenv("CE_LAMBDA_CASCADE", "0.1"))
         for i in range(num_env):
-            self.env_list.append(mvc_env.MvcEnv(NUM_MAX, cost_type="unit", lambda_cascade=self.ce_lambda_cascade))
+            self.env_list.append(mvc_env.MvcEnv(NUM_MAX, cost_type="unit", lambda_cascade=CE_LAMBDA_CASCADE))
             self.g_list.append(graph.Graph())
 
-        self.test_env = mvc_env.MvcEnv(NUM_MAX, cost_type="unit", lambda_cascade=self.ce_lambda_cascade)
+        self.test_env = mvc_env.MvcEnv(NUM_MAX, cost_type="unit", lambda_cascade=CE_LAMBDA_CASCADE)
 
         print("CUDA:", torch.cuda.is_available())
         torch.set_num_threads(16)
@@ -128,7 +128,7 @@ class MultiDismantler:
         print("Total number of MultiDismantler_net parameters: {}".format(pytorch_total_params))
         print(f"CE_COMM_SCALE: {CE_COMM_SCALE}")
         print(f"CE_COMM_NOISE_RATIO (train-only): {CE_COMM_NOISE_RATIO}")
-        print(f"CE_LAMBDA_CASCADE: {self.ce_lambda_cascade}")
+        print(f"CE_LAMBDA_CASCADE: {CE_LAMBDA_CASCADE}")
         self.flag = 1
 
         # Smoke-test configuration (keeps full pipeline, shrinks sizes)
@@ -526,6 +526,9 @@ class MultiDismantler:
         loss = 0
 
         save_dir = './models/g0-1_10w_TORCH-Model_%s_%s_%s'%(self.g_type,NUM_MIN, NUM_MAX)
+        # Keep smoke tests isolated so they don't interfere with full runs.
+        if self._smoke_fast:
+            save_dir = save_dir + "_SMOKE"
         if not os.path.exists(save_dir):
             os.mkdir(save_dir)
         VCFile = '%s/ModelVC_%d_%d.csv'%(save_dir, NUM_MIN, NUM_MAX)
@@ -560,6 +563,14 @@ class MultiDismantler:
                 start_iter = 0
                 f_out = open(VCFile, 'w')
         else:
+            # Fresh run: backup any existing VC file to avoid overwriting.
+            if os.path.isfile(VCFile):
+                try:
+                    bak = VCFile + time.strftime(".bak_%Y%m%d_%H%M%S")
+                    os.replace(VCFile, bak)
+                    print(f"Backed up existing VCFile to: {bak}")
+                except Exception:
+                    pass
             f_out = open(VCFile, 'w')
         
         best_frac = inf
