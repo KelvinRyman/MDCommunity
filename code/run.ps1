@@ -43,17 +43,17 @@ if ($address_dirtory -eq "MultiDismantler_degree_cost") {
         python -u .\MultiDismantler_unit_cost\drawUnweight.py --output "..\results\unitcost\MultiDismantler_audc\"
     }
 
-} elseif ($address_dirtory -eq "MultiDismantler_community") {
+} elseif ($address_dirtory -eq "HCA-Dismantler") {
 
     if ($input_filename -eq "train") {
         # Training
-        python -u .\MultiDismantler_community\train.py
+        python -u .\HCA-Dismantler\train.py
     } elseif ($input_filename -eq "testReal") {
-        python -u .\MultiDismantler_community\testReal.py --output "..\..\results\community\MultiDismantler_real"
+        python -u .\HCA-Dismantler\testReal.py --output "..\results\HCA\HCA_real"
     } elseif ($input_filename -eq "testSynthetic") {
-        python -u .\MultiDismantler_community\testSynthetic.py --output "..\..\results\community\MultiDismantler_syn\"
+        python -u .\HCA-Dismantler\testSynthetic.py --output "..\results\HCA\HCA_syn\"
     } elseif ($input_filename -eq "drawLmcc") {
-        python -u .\MultiDismantler_community\drawCommunity.py --output "..\..\results\community\MultiDismantler_audc\"
+        python -u .\HCA-Dismantler\drawCommunity.py --output "..\results\HCA\HCA_audc\"
     }
 
 } else {

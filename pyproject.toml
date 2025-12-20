@@ -1,19 +1,39 @@
 [project]
-name = "project-graph"
-version = "0.1.0"
-description = "Add your description here"
+name = "HCA-Dismantler"
+version = "0.5.0"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10, <3.12"
 dependencies = [
-    "matplotlib>=3.9.4",
-    "networkx==2.5.1",
-    "numpy<2",
-    "pandas>=2.3.3",
-    "psutil>=7.1.3",
+    "torch==2.5.1+cu121",
+    "torchaudio==2.5.1+cu121",
+    "torchvision==0.20.1+cu121",
+    "torch-scatter>=2.1.2",
+    "torch-sparse>=0.6.18",
+    "leidenalg>=0.11.0",
+    "networkx>=3.1",
+    "cdlib>=0.4.0",
+    "scipy>=1.15.3",
+    "matplotlib>=3.10.8",
+    "numpy>=1.26.4",
+    "diffusers>=0.36.0",
+    "accelerate>=1.12.0",
+    "transformers>=4.57.3",
     "tqdm>=4.67.1",
+    "pandas>=2.3.3",
 ]
 
+[tool.uv.sources]
+torch = { index = "pytorch-gpu" }
+torchaudio = { index = "pytorch-gpu" }
+torchvision = { index = "pytorch-gpu" }
+torch_scatter = { url = "https://data.pyg.org/whl/torch-2.5.0%2Bcu121/torch_scatter-2.1.2%2Bpt25cu121-cp310-cp310-win_amd64.whl" }
+torch_sparse = { url = "https://data.pyg.org/whl/torch-2.5.0%2Bcu121/torch_sparse-0.6.18%2Bpt25cu121-cp310-cp310-win_amd64.whl" }
 
 [[index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 default = true
+
+[[tool.uv.index]]
+name="pytorch-gpu"
+url = "https://mirrors.nju.edu.cn/pytorch/whl/cu121"
+explicit = true

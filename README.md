@@ -17,6 +17,10 @@ Run the following command to test the pre-trained model with unit removal cost i
 ~~~~ 
 Run this following command to test the trained model with unit removal cost in the synthetic dataset generated with different network size of nodes and various synthetic network controling parameters $g$, $\gamma$, and $k$, and the output of the code includes the average value of AUDC.The results are stored in the "results/unitcost/MultiDismantler_syn/" folder.
 ~~~~ {.sourceCode .shell}
+SMOKE_TEST=1 ./run.sh MultiDismantler_unit_cost train
+~~~~
+
+~~~~ {.sourceCode .shell}
 ./run.sh MultiDismantler_unit_cost testSynthetic
 ~~~~ 
 Run this command to output the Normalized LMCC decline curve of real network with degree node remmoval cost.The results are stored in the "results/unitcost/MultiDismantler_audc" folder.
