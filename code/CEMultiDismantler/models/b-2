@@ -1,0 +1,52 @@
+(project-graph) PS F:\project\project-graph\code> .\run.ps1 CEMultiDismantler testReal
+CUDA: True
+Total number of MultiDismantler_net parameters: 31269
+COMM_PRIOR_FEATURE: boundary
+ENABLE_ACTION_PRUNING: True
+The best model is :./models/g0-1_10w_TORCH-Model_GMM_30_50/nrange_30_50_iter_30000.ckpt
+restore model from file successfully
+
+Testing dataset fao_trade_multiplex
+testing
+100%|████████████████████████████████████████████████████████████████████████████████████| 1/1 [00:03<00:00,  3.88s/it]
+0.317829645053508
+F:\project\project-graph\code\CEMultiDismantler\testReal.py:89: FutureWarning: Setting an item of incompatible dtype is deprecated and will raise an error in a future version of pandas. Value '3.8787472248077393' has dtype incompatible with int32, please explicitly cast to a compatible dtype first.
+  df.iloc[0,j] = time
+Data:fao_trade_multiplex, time:3.88, audc:0.317830
+
+Testing dataset celegans_connectome_multiplex
+testing
+100%|████████████████████████████████████████████████████████████████████████████████████| 1/1 [00:02<00:00,  2.30s/it]
+0.1769660962581763
+F:\project\project-graph\code\CEMultiDismantler\testReal.py:89: FutureWarning: Setting an item of incompatible dtype is deprecated and will raise an error in a future version of pandas. Value '2.3040781021118164' has dtype incompatible with int32, please explicitly cast to a compatible dtype first.
+  df.iloc[0,j] = time
+Data:celegans_connectome_multiplex, time:2.30, audc:0.176966
+
+Testing dataset fb-tw
+testing
+100%|████████████████████████████████████████████████████████████████████████████████████| 1/1 [00:46<00:00, 46.77s/it]
+0.32458181236550343
+F:\project\project-graph\code\CEMultiDismantler\testReal.py:89: FutureWarning: Setting an item of incompatible dtype is deprecated and will raise an error in a future version of pandas. Value '46.77061581611633' has dtype incompatible with int32, please explicitly cast to a compatible dtype first.
+  df.iloc[0,j] = time
+Data:fb-tw, time:46.77, audc:0.324582
+
+Testing dataset homo_genetic_multiplex
+testing
+100%|██████████████████████████████████████████████████████████████████████████████████| 1/1 [48:52<00:00, 2932.43s/it]
+0.09442571778911561
+F:\project\project-graph\code\CEMultiDismantler\testReal.py:89: FutureWarning: Setting an item of incompatible dtype is deprecated and will raise an error in a future version of pandas. Value '2932.430755853653' has dtype incompatible with int32, please explicitly cast to a compatible dtype first.
+  df.iloc[0,j] = time
+Data:homo_genetic_multiplex, time:2932.43, audc:0.094426
+
+Testing dataset sacchpomb_genetic_multiplex
+testing
+100%|███████████████████████████████████████████████████████████████████████████████████| 1/1 [02:32<00:00, 152.23s/it]
+0.10699760653315785
+F:\project\project-graph\code\CEMultiDismantler\testReal.py:89: FutureWarning: Setting an item of incompatible dtype is deprecated and will raise an error in a future version of pandas. Value '152.23000502586365' has dtype incompatible with int32, please explicitly cast to a compatible dtype first.
+  df.iloc[0,j] = time
+Data:sacchpomb_genetic_multiplex, time:152.23, audc:0.106998
+
+Testing dataset Sanremo2016_final_multiplex
+testing
+100%|███████████████████████████████████████████████████████████████████████████████████| 1/1 [03:25:32<00:00]
+Error VMem explosion

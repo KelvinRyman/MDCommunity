@@ -28,9 +28,9 @@ def GetSolution(STEPRATIO, MODEL_FILE):
         'fao_trade_multiplex',
         'celegans_connectome_multiplex',
         'fb-tw',
-        'homo_genetic_multiplex',
-        'sacchpomb_genetic_multiplex',
-        'Sanremo2016_final_multiplex',
+        # 'homo_genetic_multiplex',
+        # 'sacchpomb_genetic_multiplex',
+        # 'Sanremo2016_final_multiplex',
         # "arxiv_netscience_multiplex",
         # "EUAirTransportation_multiplex",
         # "humanHIV1_genetic_multiplex",
@@ -42,9 +42,9 @@ def GetSolution(STEPRATIO, MODEL_FILE):
         214,
         279,
         1043,
-        18222,
-        4092,
-        56562,
+        # 18222,
+        # 4092,
+        # 56562,
         # 14488,
         # 450,
         # 1005,
@@ -56,9 +56,9 @@ def GetSolution(STEPRATIO, MODEL_FILE):
         (3,24),
         (2,3),
         (1,2),
-        (1,2),
-        (4,6),
-        (1,2),
+        # (1,2),
+        # (4,6),
+        # (1,2),
         # (4, 8),
         # (1, 11),
         # (1, 5),
@@ -97,7 +97,7 @@ def GetSolution(STEPRATIO, MODEL_FILE):
 
 def main():
     outputpath = f"{args['output']}"    
-    model_file_ckpt = 'g0-1_10w_TORCH-Model_{}_30_50/nrange_30_50_iter_10000.ckpt'.format(g_type)
+    model_file_ckpt = 'g0-1_10w_TORCH-Model_{}_30_50/nrange_30_50_iter_30000.ckpt'.format(g_type)
     GetSolution(0, model_file_ckpt)
 
 

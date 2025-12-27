@@ -8,9 +8,11 @@ import random
 import time
 import pickle as cp
 import sys
+from typing import List, Optional
 from tqdm import tqdm
 import PrepareBatchGraph
 import graph
+import dataset
 import nstep_replay_mem
 import nstep_replay_mem_prioritized
 import mvc_env
@@ -33,15 +35,18 @@ from MRGNN.aggregators import MeanAggregator, LSTMAggregator, PoolAggregator
 GAMMA = 1  # decay rate of past observations
 UPDATE_TIME = 1000
 EMBEDDING_SIZE = 64
-MAX_ITERATION = 12000
+MAX_ITERATION = 30000
 SAVE_FREQUENCY = 1000
 LEARNING_RATE = 0.0001   #
 MEMORY_SIZE = 100000
 Alpha = 0.001 ## weight of reconstruction loss
-CE_COMM_SCALE = 0
-# Train-time community feature noise: sigma = std(comm_feat) * ratio (ratio=0.1 => std/10); disabled for inference.
-CE_COMM_NOISE_RATIO = 0
-CE_LAMBDA_CASCADE = 0.1
+# Static community prior (computed once per graph at data load time).
+# 'none' disables community computation and forces the community feature dim to all-zeros.
+COMM_PRIOR_FEATURE = "boundary"  # 'none'|'boundary'|'participation'
+# Divide-and-Conquer action pruning (boundary-first).
+# Training and testing can be different so evaluation is not over-constrained.
+ACTION_PRUNING_TRAIN = True
+ACTION_PRUNING_TEST = False
 ########################### hyperparameters for priority(start)#########################################
 epsilon = 0.0000001  # small amount to avoid zero priority
 alpha = 0.6  # [0~1] convert the importance of TD error to priority
@@ -59,7 +64,7 @@ BATCH_SIZE = 64
 initialization_stddev = 0.01 
 n_valid = 200 
 n_train = 1000 
-aux_dim = 5
+aux_dim = 4
 num_env = 1
 inf = 2147483647/2
 #########################  embedding method ##########################################################
@@ -103,10 +108,10 @@ class MultiDismantler:
             self.nStepReplayMem = nstep_replay_mem.NStepReplayMem(MEMORY_SIZE)
 
         for i in range(num_env):
-            self.env_list.append(mvc_env.MvcEnv(NUM_MAX, cost_type="unit", lambda_cascade=CE_LAMBDA_CASCADE))
+            self.env_list.append(mvc_env.MvcEnv(NUM_MAX))
             self.g_list.append(graph.Graph())
 
-        self.test_env = mvc_env.MvcEnv(NUM_MAX, cost_type="unit", lambda_cascade=CE_LAMBDA_CASCADE)
+        self.test_env = mvc_env.MvcEnv(NUM_MAX)
 
         print("CUDA:", torch.cuda.is_available())
         torch.set_num_threads(16)
@@ -115,8 +120,8 @@ class MultiDismantler:
         
         layerNodeAttention_weight1 = BitwiseMultipyLogis(EMBEDDING_SIZE, dropout=0.5, alpha=0.5,
                                                         metapath_number=2, device = self.device)
-        self.MultiDismantler_net = MultiDismantler_net(layerNodeAttention_weight1, device=self.device, comm_scale=CE_COMM_SCALE, aux_dim=aux_dim)
-        self.MultiDismantler_net_T = MultiDismantler_net(layerNodeAttention_weight1, device=self.device, comm_scale=CE_COMM_SCALE, aux_dim=aux_dim)
+        self.MultiDismantler_net = MultiDismantler_net(layerNodeAttention_weight1, device=self.device, aux_dim=aux_dim)
+        self.MultiDismantler_net_T = MultiDismantler_net(layerNodeAttention_weight1, device=self.device, aux_dim=aux_dim)
         self.MultiDismantler_net.to(self.device)
         self.MultiDismantler_net_T.to(self.device)
 
@@ -126,9 +131,11 @@ class MultiDismantler:
 
         pytorch_total_params = sum(p.numel() for p in self.MultiDismantler_net.parameters())
         print("Total number of MultiDismantler_net parameters: {}".format(pytorch_total_params))
-        print(f"CE_COMM_SCALE: {CE_COMM_SCALE}")
-        print(f"CE_COMM_NOISE_RATIO (train-only): {CE_COMM_NOISE_RATIO}")
-        print(f"CE_LAMBDA_CASCADE: {CE_LAMBDA_CASCADE}")
+        if COMM_PRIOR_FEATURE not in ("none", "boundary", "participation"):
+            raise ValueError("CE_COMM_PRIOR_FEATURE must be one of: none, boundary, participation")
+        print(f"COMM_PRIOR_FEATURE: {COMM_PRIOR_FEATURE}")
+        print(f"ACTION_PRUNING_TRAIN: {ACTION_PRUNING_TRAIN}")
+        print(f"ACTION_PRUNING_TEST: {ACTION_PRUNING_TEST}")
         self.flag = 1
 
         # Smoke-test configuration (keeps full pipeline, shrinks sizes)
@@ -149,73 +156,89 @@ class MultiDismantler:
             self._smoke_warmup_games = 10
             self._smoke_warmup_traj = 100
 
-    def _ce_community_count_stats(self, graphs):
-        if not graphs:
-            return {"layer0": (0.0, 0.0), "layer1": (0.0, 0.0)}
-        counts0 = []
-        counts1 = []
-        for g in graphs:
-            part = getattr(g, "community_partition", None)
-            if not part or len(part) < 2:
-                continue
-            vals0 = list(part[0].values())
-            vals1 = list(part[1].values())
-            counts0.append(len(set(vals0)) if vals0 else 0)
-            counts1.append(len(set(vals1)) if vals1 else 0)
-        if not counts0:
-            counts0 = [0]
-        if not counts1:
-            counts1 = [0]
-        c0 = np.asarray(counts0, dtype=np.float32)
-        c1 = np.asarray(counts1, dtype=np.float32)
-        return {"layer0": (float(c0.mean()), float(c0.var())), "layer1": (float(c1.mean()), float(c1.var()))}
+    def _apply_action_pruning(
+        self, g: graph.Graph, covered: List[int], pred: np.ndarray, *, enabled: bool
+    ) -> np.ndarray:
+        if not enabled:
+            return pred
+        boundary = getattr(g, "boundary_nodes", None)
+        if not boundary:
+            return pred
+        covered_set = set(covered)
+        # Only prune when there are boundary candidates that are currently valid actions (idx_map >= 0).
+        candidates = [n for n in boundary if n not in covered_set and pred[n] != -inf]
+        if not candidates:
+            return pred
+        mask = np.ones_like(pred, dtype=bool)
+        mask[candidates] = False
+        pred[mask] = -inf
+        return pred
 
-    def _ce_debug_graph_magnitudes(self, graphs, sample_k: int = 8):
-        if not graphs:
-            return 0.0, 0.0, 0.0
+    def _attach_static_comm_prior(
+        self,
+        g: graph.Graph,
+        cache_id: Optional[str] = None,
+        *,
+        G1_nx: Optional[nx.Graph] = None,
+        G2_nx: Optional[nx.Graph] = None,
+    ):
+        n = int(getattr(g, "num_nodes", 0))
+        if n <= 0:
+            return
+        try:
+            if COMM_PRIOR_FEATURE == "none":
+                g.node_comm_feat = [np.zeros((n,), dtype=np.float32), np.zeros((n,), dtype=np.float32)]
+                g.boundary_nodes = set()
+                return
 
-        k = min(sample_k, len(graphs))
-        topo_norms = []
-        comm_norms = []
-        with torch.no_grad():
-            w_topo = self.MultiDismantler_net.w_n2l
-            w_comm = self.MultiDismantler_net.w_comm
-            comm_scale = float(self.MultiDismantler_net.comm_scale)
-            for g in graphs[:k]:
-                n = int(getattr(g, "num_nodes", 0))
-                if n <= 0:
-                    continue
-                comm_feat = getattr(g, "community_feat", None)
-                for layer in range(2):
-                    deg = np.zeros(n, dtype=np.float32)
-                    for node, neigh in g.adj_list[layer]:
-                        deg[int(node)] = float(len(neigh))
-                    max_deg = float(deg.max()) if deg.size else 0.0
-                    deg_new = deg / max_deg if max_deg > 0 else deg
-                    node_input = torch.tensor(np.stack([deg_new, deg_new], axis=1), dtype=torch.float, device=self.device)
-                    topo_term = torch.matmul(node_input, w_topo)
-                    topo_norms.append(float(topo_term.norm(p=2, dim=1).mean().item()))
+            cache_path = None
+            if cache_id:
+                cache_dir = os.path.join(os.path.dirname(__file__), "cache")
+                os.makedirs(cache_dir, exist_ok=True)
+                cache_path = os.path.join(cache_dir, f"comm_prior_{cache_id}_{COMM_PRIOR_FEATURE}.npz")
+                if os.path.isfile(cache_path):
+                    data = np.load(cache_path, allow_pickle=False)
+                    if int(data.get("n", -1)) == n:
+                        g.node_comm_feat = [
+                            np.asarray(data["feat0"], dtype=np.float32),
+                            np.asarray(data["feat1"], dtype=np.float32),
+                        ]
+                        g.boundary_nodes = set(np.asarray(data["boundary"], dtype=np.int64).tolist())
+                        return
 
-                    if isinstance(comm_feat, list) and len(comm_feat) > layer and isinstance(comm_feat[layer], np.ndarray):
-                        cf = comm_feat[layer]
-                        if cf.shape[0] == n and cf.shape[1] == 2:
-                            comm_input = torch.tensor(cf, dtype=torch.float, device=self.device)
-                        else:
-                            comm_input = torch.zeros((n, 2), dtype=torch.float, device=self.device)
-                    else:
-                        comm_input = torch.zeros((n, 2), dtype=torch.float, device=self.device)
-                    comm_term = comm_scale * torch.matmul(comm_input, w_comm)
-                    comm_norms.append(float(comm_term.norm(p=2, dim=1).mean().item()))
+            if G1_nx is None or G2_nx is None:
+                G1 = nx.Graph()
+                G1.add_nodes_from(range(n))
+                G1.add_edges_from(list(g.edge_list[0]))
+                G2 = nx.Graph()
+                G2.add_nodes_from(range(n))
+                G2.add_edges_from(list(g.edge_list[1]))
+            else:
+                G1 = G1_nx
+                G2 = G2_nx
+            feats, boundary_union = dataset.apply_prior_to_two_layer_graph(
+                G1=G1, G2=G2, feature=COMM_PRIOR_FEATURE, seed=0
+            )
+            g.node_comm_feat = feats
+            g.boundary_nodes = boundary_union
+            if cache_id and cache_path:
+                np.savez_compressed(
+                    cache_path,
+                    n=np.int64(n),
+                    feat0=np.asarray(feats[0], dtype=np.float32),
+                    feat1=np.asarray(feats[1], dtype=np.float32),
+                    boundary=np.asarray(sorted(boundary_union), dtype=np.int64),
+                )
+        except Exception:
+            g.node_comm_feat = [np.zeros((n,), dtype=np.float32), np.zeros((n,), dtype=np.float32)]
+            g.boundary_nodes = set()
 
-        topo_norm = float(np.mean(topo_norms)) if topo_norms else 0.0
-        comm_norm = float(np.mean(comm_norms)) if comm_norms else 0.0
-        ratio = comm_norm / (topo_norm + 1e-12)
-        return topo_norm, comm_norm, ratio
     def gen_graph(self,num_min,num_max):
         max_n = num_max
         min_n = num_min
         cur_n = np.random.randint(max_n - min_n + 1) + min_n
         g = graph.Graph(cur_n)
+        self._attach_static_comm_prior(g)
         return g
 
     def gen_new_graphs(self, num_min, num_max):
@@ -271,7 +294,7 @@ class MultiDismantler:
                     self.g_list,
                     [env.action_list for env in self.env_list],
                     [env.remove_edge for env in self.env_list],
-                    [env.getAlpha() for env in self.env_list],
+                    apply_pruning=ACTION_PRUNING_TRAIN,
                 )
             else:
                 Random = True
@@ -292,11 +315,11 @@ class MultiDismantler:
             sparse_dict['value'] = Variable(sparse_dict['value']).to(self.device)
         return sparse_dicts
 
-    def SetupTrain(self, idxes, g_list, covered, actions, target, remove_edges, alphas=None):
+    def SetupTrain(self, idxes, g_list, covered, actions, target, remove_edges):
         self.m_y = target
         self.inputs['target'] = Variable(torch.tensor(self.m_y).type(torch.FloatTensor)).to(self.device)
         PrepareBatchGraph1 = PrepareBatchGraph.PrepareBatchGraph(aggregatorID)
-        PrepareBatchGraph1.SetupTrain(idxes, g_list, covered, actions, remove_edges, alphas=alphas)
+        PrepareBatchGraph1.SetupTrain(idxes, g_list, covered, actions, remove_edges)
         PrepareBatchGraph1.idx_map_list = [it[0] for it in PrepareBatchGraph1.idx_map_list]
         self.inputs['action_select'] = self.SetupSparseT(PrepareBatchGraph1.act_select)
         self.inputs['rep_global'] = self.SetupSparseT(PrepareBatchGraph1.rep_global)
@@ -305,12 +328,7 @@ class MultiDismantler:
         self.inputs['subgsum_param'] = self.SetupSparseT(PrepareBatchGraph1.subgsum_param)
         self.inputs['node_input'] = None
         self.inputs['aux_input'] = Variable(torch.tensor(PrepareBatchGraph1.aux_feat).type(torch.FloatTensor)).to(self.device)
-        comm_feat = Variable(torch.tensor(PrepareBatchGraph1.comm_feat).type(torch.FloatTensor)).to(self.device)
-        if CE_COMM_NOISE_RATIO and CE_COMM_NOISE_RATIO > 0:
-            # Dynamic Gaussian noise: sigma = std(comm_feat) / 10 (ratio=0.1), train-only.
-            std = comm_feat.std(dim=1, keepdim=True, unbiased=False)
-            comm_feat = comm_feat + torch.randn_like(comm_feat) * (std * float(CE_COMM_NOISE_RATIO))
-        self.inputs['comm_feat'] = comm_feat
+        self.inputs['node_feat'] = Variable(torch.tensor(PrepareBatchGraph1.node_feat).type(torch.FloatTensor)).to(self.device)
         self.inputs['adj'] = PrepareBatchGraph1.adj
         self.inputs['v_adj'] = PrepareBatchGraph1.virtual_adj
 
@@ -325,9 +343,9 @@ class MultiDismantler:
         prepareBatchGraph.graph = prepareBatchGraph.graph[0]
         return prepareBatchGraph
 
-    def SetuppredAll(self, idxes, g_list, covered, remove_edges, alphas=None):
+    def SetuppredAll(self, idxes, g_list, covered, remove_edges):
         PrepareBatchGraph1 = PrepareBatchGraph.PrepareBatchGraph(aggregatorID)
-        PrepareBatchGraph1.SetupPredAll(idxes, g_list, covered, remove_edges, alphas=alphas)
+        PrepareBatchGraph1.SetupPredAll(idxes, g_list, covered, remove_edges)
         PrepareBatchGraph1.idx_map_list = [it[0] for it in PrepareBatchGraph1.idx_map_list]
         self.inputs['rep_global'] = self.SetupSparseT(PrepareBatchGraph1.rep_global)
 
@@ -337,12 +355,12 @@ class MultiDismantler:
 
         self.inputs['node_input'] = None
         self.inputs['aux_input'] = Variable(torch.tensor(PrepareBatchGraph1.aux_feat).type(torch.FloatTensor)).to(self.device)
-        self.inputs['comm_feat'] = Variable(torch.tensor(PrepareBatchGraph1.comm_feat).type(torch.FloatTensor)).to(self.device)
+        self.inputs['node_feat'] = Variable(torch.tensor(PrepareBatchGraph1.node_feat).type(torch.FloatTensor)).to(self.device)
         self.inputs['adj'] = PrepareBatchGraph1.adj
         self.inputs['v_adj'] = PrepareBatchGraph1.virtual_adj
         return PrepareBatchGraph1.idx_map_list
 
-    def Predict(self,g_list,covered,remove_edges,alphas,isSnapSnot):
+    def Predict(self, g_list, covered, remove_edges, isSnapSnot, *, apply_pruning: bool):
         n_graphs = len(g_list)
         for i in range(0, n_graphs, BATCH_SIZE):
             bsize = BATCH_SIZE
@@ -352,15 +370,14 @@ class MultiDismantler:
             for j in range(i, i + bsize):
                 batch_idxes[j - i] = j
             batch_idxes = np.int32(batch_idxes)
-            batch_alphas = alphas[i : i + bsize] if alphas is not None else None
-            idx_map_list = self.SetuppredAll(batch_idxes, g_list, covered, remove_edges, alphas=batch_alphas)
+            idx_map_list = self.SetuppredAll(batch_idxes, g_list, covered, remove_edges)
             #Node input is NONE for not costed scnario
             if isSnapSnot:
-                result = self.MultiDismantler_net_T.test_forward(node_input=self.inputs['node_input'], comm_input=self.inputs['comm_feat'],\
+                result = self.MultiDismantler_net_T.test_forward(node_input=self.inputs['node_input'], node_feat=self.inputs['node_feat'],\
                     subgsum_param=self.inputs['subgsum_param'], n2nsum_param=self.inputs['n2nsum_param'],\
                     rep_global=self.inputs['rep_global'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'])
             else:
-                result = self.MultiDismantler_net.test_forward(node_input=self.inputs['node_input'], comm_input=self.inputs['comm_feat'],\
+                result = self.MultiDismantler_net.test_forward(node_input=self.inputs['node_input'], node_feat=self.inputs['node_feat'],\
                     subgsum_param=self.inputs['subgsum_param'], n2nsum_param=self.inputs['n2nsum_param'],\
                     rep_global=self.inputs['rep_global'], aux_input=self.inputs['aux_input'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'])
             # TOFIX: line below used to be raw_output = result[0]. This is weird because results is supposed to be 
@@ -380,16 +397,17 @@ class MultiDismantler:
                         pos += 1
                 for k in covered[j]:
                     cur_pred[k] = -inf
+                cur_pred = self._apply_action_pruning(g_list[j], covered[j], cur_pred, enabled=apply_pruning)
                 pred.append(cur_pred)
             assert (pos == len(raw_output))
         return pred
 
-    def PredictWithCurrentQNet(self,g_list,covered,remove_edges,alphas=None):
-        result = self.Predict(g_list,covered,remove_edges,alphas,False)
+    def PredictWithCurrentQNet(self, g_list, covered, remove_edges, *, apply_pruning: bool):
+        result = self.Predict(g_list, covered, remove_edges, False, apply_pruning=apply_pruning)
         return result
 
-    def PredictWithSnapshot(self,g_list,covered,remove_edges,alphas=None):
-        result = self.Predict(g_list,covered,remove_edges,alphas,True)
+    def PredictWithSnapshot(self, g_list, covered, remove_edges, *, apply_pruning: bool):
+        result = self.Predict(g_list, covered, remove_edges, True, apply_pruning=apply_pruning)
         return result
     #pass
     def TakeSnapShot(self):
@@ -404,11 +422,17 @@ class MultiDismantler:
                 break
         if ness:
             if self.IsDoubleDQN:
-                double_list_pred = self.PredictWithCurrentQNet(sample.g_list, sample.list_s_primes, sample.list_s_primes_edges, sample.list_alpha_primes)
-                double_list_predT = self.PredictWithSnapshot(sample.g_list, sample.list_s_primes, sample.list_s_primes_edges, sample.list_alpha_primes)
+                double_list_pred = self.PredictWithCurrentQNet(
+                    sample.g_list, sample.list_s_primes, sample.list_s_primes_edges, apply_pruning=ACTION_PRUNING_TRAIN
+                )
+                double_list_predT = self.PredictWithSnapshot(
+                    sample.g_list, sample.list_s_primes, sample.list_s_primes_edges, apply_pruning=ACTION_PRUNING_TRAIN
+                )
                 list_pred = [a[self.argMax(b)] for a, b in zip(double_list_predT, double_list_pred)]
             else:
-                list_pred = self.PredictWithSnapshot(sample.g_list, sample.list_s_primes, sample.list_s_primes_edges, sample.list_alpha_primes)
+                list_pred = self.PredictWithSnapshot(
+                    sample.g_list, sample.list_s_primes, sample.list_s_primes_edges, apply_pruning=ACTION_PRUNING_TRAIN
+                )
 
         list_target = np.zeros([self._smoke_batch, 1])
 
@@ -424,7 +448,7 @@ class MultiDismantler:
             # list_target.append(q_rhs)
         if self.IsPrioritizedSampling:
             return self.fit_with_prioritized(sample.b_idx,sample.ISWeights,sample.g_list, sample.list_st, sample.list_at,list_target)
-        return self.fit(sample.g_list, sample.list_st, sample.list_at,list_target, sample.list_st_edges, sample.list_alpha_t)
+        return self.fit(sample.g_list, sample.list_st, sample.list_at,list_target, sample.list_st_edges)
 
     def fit_with_prioritized(self,tree_idx,ISWeights,g_list,covered,actions,list_target):
         '''
@@ -461,7 +485,7 @@ class MultiDismantler:
         return None
 
 
-    def fit(self,g_list,covered,actions,list_target,remove_edges,alphas=None):
+    def fit(self,g_list,covered,actions,list_target,remove_edges):
         loss_values = 0.0
         n_graphs = len(g_list)
         for i in range(0,n_graphs,BATCH_SIZE):
@@ -476,12 +500,11 @@ class MultiDismantler:
                 batch_idxes[j-i] = j
                 # batch_idxes.append(j)
             batch_idxes = np.int32(batch_idxes)
-            batch_alphas = alphas[i : i + bsize] if alphas is not None else None
-            self.SetupTrain(batch_idxes, g_list, covered, actions,list_target, remove_edges, alphas=batch_alphas)
+            self.SetupTrain(batch_idxes, g_list, covered, actions,list_target, remove_edges)
             #Node inpute is NONE for not costed scnario
             q_pred, cur_message_layer = self.MultiDismantler_net.train_forward(node_input=self.inputs['node_input'],\
                 subgsum_param=self.inputs['subgsum_param'], n2nsum_param=self.inputs['n2nsum_param'],\
-                action_select=self.inputs['action_select'], aux_input=self.inputs['aux_input'], comm_input=self.inputs['comm_feat'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'])
+                action_select=self.inputs['action_select'], aux_input=self.inputs['aux_input'], node_feat=self.inputs['node_feat'],adj=self.inputs['adj'],v_adj=self.inputs['v_adj'])
 
             loss = self.calc_loss(q_pred, cur_message_layer)
             loss.backward()
@@ -617,25 +640,40 @@ class MultiDismantler:
                             f"var_audc={float(np.var(audc_list)):.6f}"
                         )
 
-                    try:
-                        w_comm_norm = float(self.MultiDismantler_net.w_comm.norm().item())
-                    except Exception:
-                        w_comm_norm = float("nan")
                     test_graphs = list(self.TestSet.graph_pool.values())
-                    comm_stats = self._ce_community_count_stats(test_graphs)
-                    topo_norm, comm_norm, ratio = self._ce_debug_graph_magnitudes(test_graphs, sample_k=8)
-                    l0m, l0v = comm_stats["layer0"]
-                    l1m, l1v = comm_stats["layer1"]
-                    print(
-                        "CE-DEBUG "
-                        f"iter={iter} "
-                        f"||W_comm||={w_comm_norm:.6f} "
-                        f"comm_count_mean=[{l0m:.2f},{l1m:.2f}] "
-                        f"comm_count_var=[{l0v:.2f},{l1v:.2f}] "
-                        f"comm_vs_topo_ratio={ratio:.6f} "
-                        f"topo_norm={topo_norm:.6f} "
-                        f"comm_norm={comm_norm:.6f}"
-                    )
+                    if test_graphs:
+                        boundary_ratio = float(
+                            np.mean(
+                                [
+                                    len(getattr(g, "boundary_nodes", set()))
+                                    / max(1, int(getattr(g, "num_nodes", 0)))
+                                    for g in test_graphs
+                                ]
+                            )
+                        )
+                        feat0_mean = float(
+                            np.mean(
+                                [
+                                    float(np.mean(getattr(g, "node_comm_feat", [np.zeros((0,)), np.zeros((0,))])[0]))
+                                    for g in test_graphs
+                                ]
+                            )
+                        )
+                        feat1_mean = float(
+                            np.mean(
+                                [
+                                    float(np.mean(getattr(g, "node_comm_feat", [np.zeros((0,)), np.zeros((0,))])[1]))
+                                    for g in test_graphs
+                                ]
+                            )
+                        )
+                        print(
+                            "CE-PRIOR "
+                            f"iter={iter} "
+                            f"feature={COMM_PRIOR_FEATURE} "
+                            f"boundary_ratio_mean={boundary_ratio:.6f} "
+                            f"feat_mean=[{feat0_mean:.6f},{feat1_mean:.6f}]"
+                        )
 
                     N_end = time.perf_counter()
                     print (f'{SAVE_FREQUENCY} iterations total time: %.2fs\n'%(N_end-N_start))
@@ -702,6 +740,7 @@ class MultiDismantler:
             G1 = nx.from_numpy_array(adj1)
             G2 = nx.from_numpy_array(adj2)
             g = graph.Graph_test(G1,G2)
+            self._attach_static_comm_prior(g, G1_nx=G1, G2_nx=G2)
             self.InsertGraph(g, is_test=True)
             t1 = time.time()
             val, sol , cost_value = self.GetSol(i)
@@ -771,6 +810,12 @@ class MultiDismantler:
         layers_matrix, graphs = self.read_multiplex(
         "../../data/real/%s"%(test_name),num_nodes)
         g = graph.Graph_test(graphs[layers[0]-1],graphs[layers[1]-1])
+        self._attach_static_comm_prior(
+            g,
+            cache_id=f"{test_name}_layers{layers[0]}{layers[1]}",
+            G1_nx=graphs[layers[0] - 1],
+            G2_nx=graphs[layers[1] - 1],
+        )
         # adj1 = np.array([[0,1,1,0,0,0],
         #                 [1,0,1,1,1,1],
         #                 [1,1,0,1,1,1],
@@ -836,16 +881,23 @@ class MultiDismantler:
         sum_sort_time = 0
 
         while (not self.test_env.isTerminal()):              
-            print ('Iteration:%d'%iter)
+            # print ('Iteration:%d'%iter)
             iter += 1
             list_pred = self.PredictWithCurrentQNet(
                 g_list,
                 [self.test_env.action_list],
                 [self.test_env.remove_edge],
-                [self.test_env.getAlpha()],
+                apply_pruning=ACTION_PRUNING_TEST,
             )
             start_time = time.time()
-            batchSol = np.argsort(-list_pred[0])[:step]
+            scores = list_pred[0]
+            if float(np.max(scores)) <= -inf:
+                candidates = self.test_env.getValidActions()
+                if not candidates:
+                    break
+                batchSol = candidates[:step]
+            else:
+                batchSol = np.argsort(-scores)[:step]
 
             end_time = time.time()
             sum_sort_time += (end_time-start_time)
@@ -870,10 +922,16 @@ class MultiDismantler:
                 g_list,
                 [self.test_env.action_list],
                 [self.test_env.remove_edge],
-                [self.test_env.getAlpha()],
+                apply_pruning=ACTION_PRUNING_TEST,
             )
             # new_action = self.argMax(list_pred[0])
-            new_action = self.argMax(list_pred[0])
+            scores = list_pred[0]
+            new_action = self.argMax(scores)
+            if scores[new_action] <= -inf:
+                candidates = self.test_env.getValidActions()
+                if not candidates:
+                    break
+                new_action = candidates[0]
             self.test_env.stepWithoutReward(new_action)
             sol.append(new_action)
         nodes = list(range(g_list[0].num_nodes))
@@ -904,9 +962,16 @@ class MultiDismantler:
                 g_list,
                 [self.test_env.action_list],
                 [self.test_env.remove_edge],
-                [self.test_env.getAlpha()],
+                apply_pruning=ACTION_PRUNING_TEST,
             )
-            batchSol = np.argsort(-list_pred[0])[:step]
+            scores = list_pred[0]
+            if float(np.max(scores)) <= -inf:
+                candidates = self.test_env.getValidActions()
+                if not candidates:
+                    break
+                batchSol = candidates[:step]
+            else:
+                batchSol = np.argsort(-scores)[:step]
             # if self.test_env.MaxCCList[-1] <= new_n:
             #     break
             # else:

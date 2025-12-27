@@ -31,7 +31,7 @@ class PrepareBatchGraph:
         self.adj= []
         self.virtual_adj = []
         self.remove_edge_list = []
-        self.comm_feat = None
+        self.node_feat = None
         
     def get_status_info(self,g: Graph,covered: List[int], remove_edge: List[set]):
         c = set(covered)
@@ -74,7 +74,7 @@ class PrepareBatchGraph:
         assert idx_map[0] == idx_map[1]
         return n,counter,twohop_number,threehop_number,idx_map,remove_edge
 
-    def Setup_graph_input(self, idxes, g_list, covered, actions, remove_edges, alphas=None):
+    def Setup_graph_input(self, idxes, g_list, covered, actions, remove_edges):
         self.act_select = [SparseMatrix(),SparseMatrix()]
         self.rep_global = [SparseMatrix(),SparseMatrix()]
         self.idx_map_list = []
@@ -85,7 +85,6 @@ class PrepareBatchGraph:
             g = g_list[idx]
             temp_feat1 = []
             temp_feat2 = []
-            alpha_val = float(alphas[i]) if alphas is not None else 1.0
             if remove_edges == None:
                 avail, counter, twohop_number, _, idx_map, remove_edge = self.get_status_info(g, covered[i], remove_edges)
             else:
@@ -97,11 +96,9 @@ class PrepareBatchGraph:
             temp_feat1.append(counter[0] / g.num_edges[0])
             temp_feat1.append(twohop_number[0] / (g.num_nodes * g.num_nodes))
             temp_feat1.append(1.0)
-            temp_feat1.append(alpha_val)
             temp_feat2.append(counter[1] / g.num_edges[1])
             temp_feat2.append(twohop_number[1] / (g.num_nodes * g.num_nodes))
             temp_feat2.append(1.0)
-            temp_feat2.append(alpha_val)
             temp_feat = [temp_feat1,temp_feat2]
             for j in range (2):
                 node_cnt[j] += avail[j]
@@ -113,7 +110,8 @@ class PrepareBatchGraph:
 
         total_node_cnt = node_cnt.copy()
         assert total_node_cnt[0] == total_node_cnt[1]
-        self.comm_feat = np.zeros((2, total_node_cnt[0], 2), dtype=np.float32)
+        # Static community-guided node feature (per-layer), shape [2, nodes, 1]
+        self.node_feat = np.zeros((2, total_node_cnt[0], 1), dtype=np.float32)
             
         for j in range(2):
             self.graph[j].resize(len(idxes), node_cnt[j])
@@ -130,7 +128,6 @@ class PrepareBatchGraph:
 
         for i, idx in enumerate(idxes):
             g = g_list[idx]
-            alpha_val = float(alphas[i]) if alphas is not None else 1.0
             idx_map = self.idx_map_list[i]
             remove_edge = self.remove_edge_list[i]
             t = [0,0]
@@ -145,10 +142,10 @@ class PrepareBatchGraph:
                         self.rep_global[h].rowIndex.append(node_cnt[h] + t[h])
                         self.rep_global[h].colIndex.append(i)
                         self.rep_global[h].value.append(1.0)
-                    if hasattr(g, "community_feat") and len(g.community_feat) > h:
-                        feat = g.community_feat[h]
+                    if hasattr(g, "node_comm_feat") and len(g.node_comm_feat) > h:
+                        feat = g.node_comm_feat[h]
                         if isinstance(feat, np.ndarray) and feat.shape[0] > j:
-                            self.comm_feat[h, new_idx, :] = alpha_val * feat[j]
+                            self.node_feat[h, new_idx, 0] = float(feat[j])
                     t[h] += 1
             #error
             assert t[0] == self.avail_act_cnt[i][0]
@@ -191,11 +188,11 @@ class PrepareBatchGraph:
             self.subgsum_param[j] = self.convert_sparse_to_tensor(self.subgsum_param[j])
 
 
-    def SetupTrain(self, idxes, g_list, covered, actions, remove_edges, alphas=None):
-        self.Setup_graph_input(idxes, g_list, covered, actions, remove_edges, alphas=alphas)
+    def SetupTrain(self, idxes, g_list, covered, actions, remove_edges):
+        self.Setup_graph_input(idxes, g_list, covered, actions, remove_edges)
 
-    def SetupPredAll(self, idxes, g_list, covered, remove_edges, alphas=None):
-        self.Setup_graph_input(idxes, g_list, covered, None, remove_edges, alphas=alphas)
+    def SetupPredAll(self, idxes, g_list, covered, remove_edges):
+        self.Setup_graph_input(idxes, g_list, covered, None, remove_edges)
     '''
     def convert_sparse_to_tensor(self, matrix):
         indices = np.column_stack((matrix.rowIndex, matrix.colIndex))
